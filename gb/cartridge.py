@@ -131,6 +131,67 @@ def _now_seconds() -> int:
     return int(time.time())
 
 
+_NINTENDO_LOGO = bytes(
+    [
+        0xCE,
+        0xED,
+        0x66,
+        0x66,
+        0xCC,
+        0x0D,
+        0x00,
+        0x0B,
+        0x03,
+        0x73,
+        0x00,
+        0x83,
+        0x00,
+        0x0C,
+        0x00,
+        0x0D,
+        0x00,
+        0x08,
+        0x11,
+        0x1F,
+        0x88,
+        0x89,
+        0x00,
+        0x0E,
+        0xDC,
+        0xCC,
+        0x6E,
+        0xE6,
+        0xDD,
+        0xDD,
+        0xD9,
+        0x99,
+        0xBB,
+        0xBB,
+        0x67,
+        0x63,
+        0x6E,
+        0x0E,
+        0xEC,
+        0xCC,
+        0xDD,
+        0xDC,
+        0x99,
+        0x9F,
+        0xBB,
+        0xB9,
+        0x33,
+        0x3E,
+    ]
+)
+
+
+def _has_logo_at_bank(rom: bytes, bank: int) -> bool:
+    base = bank * 0x4000
+    off = base + 0x0104
+    end = off + len(_NINTENDO_LOGO)
+    return end <= len(rom) and rom[off:end] == _NINTENDO_LOGO
+
+
 @dataclass
 class _RTC:
     seconds: int = 0
@@ -242,6 +303,7 @@ class Cartridge:
     _mbc1_high2: int = 0
     _mbc1_mode: MBC1Mode = MBC1Mode.ROM_BANKING
     _mbc1_large_rom_wiring: bool = False
+    _mbc1_multicart: bool = False
 
     _mbc2_bank: int = 1
 
@@ -282,7 +344,11 @@ class Cartridge:
         mapper = _cart_mapper_kind(header.cartridge_type)
         actual_rom_banks = max(1, len(data) // 0x4000)
         expected_rom_banks = _rom_banks_from_code(header.rom_size_code)
-        rom_banks = actual_rom_banks if expected_rom_banks is None else max(1, min(max(expected_rom_banks, 1), actual_rom_banks))
+        rom_banks = (
+            actual_rom_banks
+            if expected_rom_banks is None
+            else max(1, min(max(expected_rom_banks, 1), actual_rom_banks))
+        )
 
         if mapper == MapperKind.MBC2:
             ram = bytearray(0x200)
@@ -300,6 +366,9 @@ class Cartridge:
         if mapper == MapperKind.MBC1:
             rb = _rom_banks_from_code(header.rom_size_code)
             cart._mbc1_large_rom_wiring = bool(rb is not None and rb >= 64)
+            if cart._rom_banks >= 64 and _has_logo_at_bank(data, 0x10):
+                cart._mbc1_multicart = True
+
         if mapper == MapperKind.MBC3:
             cart._mbc3_rtc = _RTC() if _cart_has_rtc(header.cartridge_type) else None
         return cart
@@ -339,19 +408,28 @@ class Cartridge:
             return self.rom[a] & 0xFF
 
         if self._mapper == MapperKind.MBC1:
+            raw5 = self._mbc1_low5 & 0x1F
+            high2 = self._mbc1_high2 & 0x03
+
+            eff5 = 1 if raw5 == 0 else raw5
+
+            if self._mbc1_multicart:
+                bank_hi = high2 << 4
+                bank_lo = eff5 & 0x0F
+            else:
+                bank_hi = high2 << 5
+                bank_lo = eff5
+
             if a <= 0x3FFF:
                 bank0 = 0
                 if self._mbc1_mode == MBC1Mode.RAM_BANKING:
-                    bank0 = (self._mbc1_high2 & 0x03) << 5
-                b = self._rom_bank_index(bank0)
-                idx = b * 0x4000 + a
-                return self.rom[idx] & 0xFF
-            bank = ((self._mbc1_high2 & 0x03) << 5) | (self._mbc1_low5 & 0x1F)
-            if (bank & 0x1F) == 0:
-                bank |= 1
+                    bank0 = bank_hi
+                b0 = self._rom_bank_index(bank0)
+                return self.rom[b0 * 0x4000 + a] & 0xFF
+
+            bank = bank_hi | bank_lo
             b = self._rom_bank_index(bank)
-            idx = b * 0x4000 + (a - 0x4000)
-            return self.rom[idx] & 0xFF
+            return self.rom[b * 0x4000 + (a - 0x4000)] & 0xFF
 
         if self._mapper == MapperKind.MBC2:
             if a <= 0x3FFF:
@@ -390,8 +468,6 @@ class Cartridge:
                 return
             if 0x2000 <= a <= 0x3FFF:
                 self._mbc1_low5 = v & 0x1F
-                if self._mbc1_low5 == 0:
-                    self._mbc1_low5 = 1
                 return
             if 0x4000 <= a <= 0x5FFF:
                 self._mbc1_high2 = v & 0x03
