@@ -1,0 +1,387 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+
+TIMER_INTERRUPT_MASK = 1 << 2
+SERIAL_INTERRUPT_MASK = 1 << 3
+JOYPAD_INTERRUPT_MASK = 1 << 4
+
+
+_DMG_UNUSED_OFFSETS = frozenset(
+    {0x03, 0x15, 0x1F}
+    | set(range(0x08, 0x0F))
+    | set(range(0x27, 0x30))
+    | set(range(0x4C, 0x50))
+    | set(range(0x51, 0x56))
+    | set(range(0x56, 0x68))
+    | set(range(0x68, 0x70))
+    | set(range(0x70, 0x80))
+)
+
+
+@dataclass
+class IO:
+    regs: bytearray = field(default_factory=lambda: bytearray(0x80))
+    interrupt_flag: int = 0xE1
+    interrupt_enable: int = 0x00
+
+    _dpad_state: int = 0x0F
+    _btn_state: int = 0x0F
+
+    _serial_out: list[str] = field(default_factory=list)
+
+    _div_counter: int = 0
+    _global_cycles: int = 0
+
+    _tima_reload_pending: bool = False
+    _tima_reload_counter: int = 0
+    _tima_overflow_cancel_until: int = 0
+
+    _serial_active: bool = False
+    _serial_internal_clock: bool = True
+    _serial_cycle_acc: int = 0
+    _serial_bits_left: int = 0
+    _serial_latch_out: int = 0
+
+    def __post_init__(self) -> None:
+        if len(self.regs) != 0x80:
+            self.regs = bytearray(0x80)
+        self._init_post_boot_dmg()
+
+    def _init_post_boot_dmg(self) -> None:
+        self.regs[:] = b"\x00" * 0x80
+
+        self.regs[0x00] = 0x00
+        self.regs[0x01] = 0x00
+        self.regs[0x02] = 0x00
+        self.regs[0x05] = 0x00
+        self.regs[0x06] = 0x00
+        self.regs[0x07] = 0x00
+
+        self.interrupt_flag = 0xE1
+        self.interrupt_enable = 0x00
+
+        self._div_counter = 0xAB34
+        self.regs[0x04] = (self._div_counter >> 8) & 0xFF
+
+        self.regs[0x10] = 0x80
+        self.regs[0x11] = 0xBF
+        self.regs[0x12] = 0xF3
+        self.regs[0x13] = 0xFF
+        self.regs[0x14] = 0xBF
+        self.regs[0x16] = 0x3F
+        self.regs[0x17] = 0x00
+        self.regs[0x18] = 0xFF
+        self.regs[0x19] = 0xBF
+        self.regs[0x1A] = 0x7F
+        self.regs[0x1B] = 0xFF
+        self.regs[0x1C] = 0x9F
+        self.regs[0x1D] = 0xFF
+        self.regs[0x1E] = 0xBF
+        self.regs[0x20] = 0xFF
+        self.regs[0x21] = 0x00
+        self.regs[0x22] = 0x00
+        self.regs[0x23] = 0xBF
+        self.regs[0x24] = 0x77
+        self.regs[0x25] = 0xF3
+        self.regs[0x26] = 0xF1
+
+        self.regs[0x40] = 0x91
+        self.regs[0x41] = 0x85
+        self.regs[0x42] = 0x00
+        self.regs[0x43] = 0x00
+        self.regs[0x44] = 0x00
+        self.regs[0x45] = 0x00
+        self.regs[0x46] = 0xFF
+        self.regs[0x47] = 0xFC
+        self.regs[0x48] = 0xFF
+        self.regs[0x49] = 0xFF
+        self.regs[0x4A] = 0x00
+        self.regs[0x4B] = 0x00
+        self.regs[0x50] = 0x01
+
+        self._dpad_state = 0x0F
+        self._btn_state = 0x0F
+
+        self._tima_reload_pending = False
+        self._tima_reload_counter = 0
+        self._tima_overflow_cancel_until = 0
+
+        self._serial_active = False
+        self._serial_internal_clock = True
+        self._serial_cycle_acc = 0
+        self._serial_bits_left = 0
+        self._serial_latch_out = 0
+        self._serial_out.clear()
+
+        self._global_cycles = 0
+
+    def _timer_bit(self, tac: int) -> int:
+        sel = tac & 0x03
+        if sel == 0:
+            return 9
+        if sel == 1:
+            return 3
+        if sel == 2:
+            return 5
+        return 7
+
+    def _timer_input(self, tac: int, div_counter: int) -> int:
+        if (tac & 0x04) == 0:
+            return 0
+        return 1 if (div_counter & (1 << self._timer_bit(tac))) else 0
+
+    def _tima_increment(self) -> None:
+        if self._tima_reload_pending:
+            return
+        tima = self.regs[0x05]
+        if tima == 0xFF:
+            self.regs[0x05] = 0x00
+            self._tima_reload_pending = True
+            self._tima_reload_counter = 4
+            now = self._global_cycles + 1
+            self._tima_overflow_cancel_until = (now + 3) & ~3
+        else:
+            self.regs[0x05] = (tima + 1) & 0xFF
+
+    def _tick_overflow_reload(self) -> None:
+        if not self._tima_reload_pending:
+            return
+        self._tima_reload_counter -= 1
+        if self._tima_reload_counter > 0:
+            return
+        self._tima_reload_pending = False
+        self.regs[0x05] = self.regs[0x06]
+        self.request_interrupt(TIMER_INTERRUPT_MASK)
+
+    def _joyp_low(self, sel: int) -> int:
+        low = 0x0F
+        if (sel & 0x10) == 0:
+            low &= self._dpad_state
+        if (sel & 0x20) == 0:
+            low &= self._btn_state
+        return low & 0x0F
+
+    def _maybe_joypad_irq(self, old_low: int, new_low: int) -> None:
+        if (old_low & (~new_low)) & 0x0F:
+            self.request_interrupt(JOYPAD_INTERRUPT_MASK)
+
+    def tick(self, cycles: int) -> None:
+        cycles = int(cycles)
+        if cycles <= 0:
+            return
+
+        for _ in range(cycles):
+            tac = self.regs[0x07] & 0x07
+            old_input = self._timer_input(tac, self._div_counter)
+
+            self._div_counter = (self._div_counter + 1) & 0xFFFF
+            self.regs[0x04] = (self._div_counter >> 8) & 0xFF
+
+            new_input = self._timer_input(tac, self._div_counter)
+            if old_input == 1 and new_input == 0:
+                self._tima_increment()
+
+            self._tick_overflow_reload()
+
+            if self._serial_active and self._serial_internal_clock:
+                self._serial_cycle_acc += 1
+                if self._serial_cycle_acc >= 512:
+                    self._serial_cycle_acc -= 512
+                    self.regs[0x01] = ((self.regs[0x01] << 1) & 0xFF) | 0x01
+                    self._serial_bits_left -= 1
+                    if self._serial_bits_left <= 0:
+                        self._serial_active = False
+                        self.regs[0x02] &= 0x01
+                        self.request_interrupt(SERIAL_INTERRUPT_MASK)
+                        self._serial_out.append(chr(self._serial_latch_out))
+
+            self._global_cycles += 1
+
+    def request_interrupt(self, mask: int) -> None:
+        self.interrupt_flag = (self.interrupt_flag | (mask & 0x1F) | 0xE0) & 0xFF
+
+    def set_button(self, name: str, pressed: bool) -> None:
+        name = name.lower()
+        pressed = bool(pressed)
+
+        sel = self.regs[0x00] & 0x30
+        old_low = self._joyp_low(sel)
+
+        if name in ("right", "left", "up", "down"):
+            bit = {"right": 0, "left": 1, "up": 2, "down": 3}[name]
+            if pressed:
+                self._dpad_state &= ~(1 << bit)
+            else:
+                self._dpad_state |= 1 << bit
+        elif name in ("a", "b", "select", "start"):
+            bit = {"a": 0, "b": 1, "select": 2, "start": 3}[name]
+            if pressed:
+                self._btn_state &= ~(1 << bit)
+            else:
+                self._btn_state |= 1 << bit
+        else:
+            return
+
+        new_low = self._joyp_low(sel)
+        self._maybe_joypad_irq(old_low, new_low)
+
+    def consume_serial_output(self) -> str:
+        out = "".join(self._serial_out)
+        self._serial_out.clear()
+        return out
+
+    def read(self, address: int) -> int:
+        address &= 0xFFFF
+
+        if address == 0xFF0F:
+            return self.interrupt_flag & 0xFF
+        if address == 0xFFFF:
+            return self.interrupt_enable & 0x1F
+
+        if 0xFF00 <= address <= 0xFF7F:
+            off = address - 0xFF00
+            if off in _DMG_UNUSED_OFFSETS:
+                return 0xFF
+
+            if off == 0x00:
+                sel = self.regs[0x00] & 0x30
+                return 0xC0 | sel | self._joyp_low(sel)
+
+            if off == 0x02:
+                return 0x7E | (self.regs[0x02] & 0x81)
+            if off == 0x04:
+                return (self._div_counter >> 8) & 0xFF
+            if off == 0x07:
+                return 0xF8 | (self.regs[0x07] & 0x07)
+
+            if off == 0x10:
+                return 0x80 | (self.regs[0x10] & 0x7F)
+            if off == 0x11:
+                return 0x3F | (self.regs[0x11] & 0xC0)
+            if off == 0x13:
+                return 0xFF
+            if off == 0x14:
+                return 0xBF | (self.regs[0x14] & 0x40)
+            if off == 0x16:
+                return 0x3F | (self.regs[0x16] & 0xC0)
+            if off == 0x18:
+                return 0xFF
+            if off == 0x19:
+                return 0xBF | (self.regs[0x19] & 0x40)
+            if off == 0x1A:
+                return 0x7F | (self.regs[0x1A] & 0x80)
+            if off == 0x1B:
+                return 0xFF
+            if off == 0x1C:
+                return 0x9F | (self.regs[0x1C] & 0x60)
+            if off == 0x1D:
+                return 0xFF
+            if off == 0x1E:
+                return 0xBF | (self.regs[0x1E] & 0x40)
+            if off == 0x20:
+                return 0xFF
+            if off == 0x23:
+                return 0xBF | (self.regs[0x23] & 0x40)
+            if off == 0x26:
+                return 0x70 | (self.regs[0x26] & 0x8F)
+
+            if off == 0x41:
+                return 0x80 | (self.regs[0x41] & 0x7F)
+            if off == 0x44:
+                return self.regs[0x44] & 0xFF
+            if off == 0x50:
+                return 0xFF
+
+            return self.regs[off] & 0xFF
+
+        return 0xFF
+
+    def write(self, address: int, value: int) -> None:
+        address &= 0xFFFF
+        value &= 0xFF
+
+        if address == 0xFF0F:
+            self.interrupt_flag = (value | 0xE0) & 0xFF
+            return
+        if address == 0xFFFF:
+            self.interrupt_enable = value & 0x1F
+            return
+
+        if 0xFF00 <= address <= 0xFF7F:
+            off = address - 0xFF00
+            if off in _DMG_UNUSED_OFFSETS:
+                return
+
+            if off == 0x00:
+                old_sel = self.regs[0x00] & 0x30
+                old_low = self._joyp_low(old_sel)
+                self.regs[0x00] = value & 0x30
+                new_sel = self.regs[0x00] & 0x30
+                new_low = self._joyp_low(new_sel)
+                self._maybe_joypad_irq(old_low, new_low)
+                return
+
+            if off == 0x02:
+                if (value & 0x80) == 0:
+                    self._serial_active = False
+                    self._serial_cycle_acc = 0
+                    self._serial_bits_left = 0
+                    self.regs[0x02] = value & 0x01
+                    return
+                self.regs[0x02] = value & 0x81
+                self._serial_internal_clock = (value & 0x01) != 0
+                self._serial_active = True
+                self._serial_cycle_acc = 0
+                self._serial_bits_left = 8
+                self._serial_latch_out = self.regs[0x01] & 0xFF
+                return
+
+            if off == 0x04:
+                tac = self.regs[0x07] & 0x07
+                old_input = self._timer_input(tac, self._div_counter)
+                self._div_counter = 0
+                self.regs[0x04] = 0
+                new_input = self._timer_input(tac, self._div_counter)
+                if old_input == 1 and new_input == 0:
+                    self._tima_increment()
+                return
+
+            if off == 0x05:
+                if self._tima_reload_pending:
+                    if self._global_cycles < self._tima_overflow_cancel_until:
+                        self._tima_reload_pending = False
+                        self._tima_reload_counter = 0
+                        self.regs[0x05] = value
+                    return
+                self.regs[0x05] = value
+                return
+
+            if off == 0x07:
+                old_tac = self.regs[0x07] & 0x07
+                old_input = self._timer_input(old_tac, self._div_counter)
+                self.regs[0x07] = value & 0x07
+                new_input = self._timer_input(self.regs[0x07] & 0x07, self._div_counter)
+                if old_input == 1 and new_input == 0:
+                    self._tima_increment()
+                return
+
+            if off == 0x10:
+                self.regs[0x10] = value & 0x7F
+                return
+            if off == 0x26:
+                self.regs[0x26] = (self.regs[0x26] & 0x0F) | (value & 0x80)
+                return
+
+            if off == 0x41:
+                self.regs[0x41] = (self.regs[0x41] & 0x07) | (value & 0x78) | 0x80
+                return
+            if off == 0x44:
+                return
+            if off == 0x50:
+                self.regs[0x50] = value
+                return
+
+            self.regs[off] = value
+            return
