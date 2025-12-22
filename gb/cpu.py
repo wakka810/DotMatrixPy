@@ -218,20 +218,41 @@ class CPU:
         return ie & ir & 0x1F
 
     def _service_interrupt(self) -> int:
-        pending = self._interrupt_pending()
-        if pending == 0 or not self.ime:
+        pending0 = self._interrupt_pending()
+        if pending0 == 0 or not self.ime:
             return 0
+
         self.halted = False
         self.stopped = False
         self.ime = False
+
+        pc = self.pc & 0xFFFF
+        msb = (pc >> 8) & 0xFF
+        lsb = pc & 0xFF
+
+        self.sp = (self.sp - 1) & 0xFFFF
+        self.bus.write_byte(self.sp, msb)
+
+        pending = self._interrupt_pending()
+        if pending == 0:
+            self.sp = (self.sp - 1) & 0xFFFF
+            self.bus.write_byte(self.sp, lsb)
+            self.pc = 0x0000
+            return 20
+
+        self.sp = (self.sp - 1) & 0xFFFF
+        self.bus.write_byte(self.sp, lsb)
+
         for i, vector in enumerate((0x40, 0x48, 0x50, 0x58, 0x60)):
             if pending & (1 << i):
                 ir = self._read8(0xFF0F)
                 self._write8(0xFF0F, ir & ~(1 << i))
-                self.push_u16(self.pc)
                 self.pc = vector
                 return 20
-        return 0
+
+        self.pc = 0x0000
+        return 20
+
 
     def _imm8(self, off: int) -> int:
         return self._read8((self.pc + off) & 0xFFFF)
