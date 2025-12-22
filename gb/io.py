@@ -20,7 +20,7 @@ _DMG_UNUSED_OFFSETS = frozenset(
 )
 
 
-@dataclass
+@dataclass(slots=True)
 class IO:
     regs: bytearray = field(default_factory=lambda: bytearray(0x80))
     interrupt_flag: int = 0xE1
@@ -132,18 +132,22 @@ class IO:
             return 0
         return 1 if (div_counter & (1 << self._timer_bit(tac))) else 0
 
-    def _tima_increment(self) -> None:
+    def _tima_increment(self, *, global_cycles_before: int | None = None) -> bool:
         if self._tima_reload_pending:
-            return
+            return False
+        if global_cycles_before is None:
+            global_cycles_before = self._global_cycles
         tima = self.regs[0x05]
         if tima == 0xFF:
             self.regs[0x05] = 0x00
             self._tima_reload_pending = True
             self._tima_reload_counter = 4
-            now = self._global_cycles + 1
+            now = int(global_cycles_before) + 1
             self._tima_overflow_cancel_until = (now + 3) & ~3
+            return True
         else:
             self.regs[0x05] = (tima + 1) & 0xFF
+            return False
 
     def _tick_overflow_reload(self) -> None:
         if not self._tima_reload_pending:
@@ -172,32 +176,79 @@ class IO:
         if cycles <= 0:
             return
 
-        for _ in range(cycles):
-            tac = self.regs[0x07] & 0x07
-            old_input = self._timer_input(tac, self._div_counter)
+        regs = self.regs
+        gc_start = self._global_cycles
+        div_counter = self._div_counter & 0xFFFF
 
-            self._div_counter = (self._div_counter + 1) & 0xFFFF
-            self.regs[0x04] = (self._div_counter >> 8) & 0xFF
+        tac = regs[0x07] & 0x07
+        timer_enabled = (tac & 0x04) != 0
+        timer_period = 0
+        timer_mask = 0
+        if timer_enabled:
+            bit = self._timer_bit(tac)
+            timer_period = 1 << (bit + 1)
+            timer_mask = timer_period - 1
 
-            new_input = self._timer_input(tac, self._div_counter)
-            if old_input == 1 and new_input == 0:
-                self._tima_increment()
+        remaining = cycles
+        processed = 0
+        while remaining > 0:
+            step = remaining
 
-            self._tick_overflow_reload()
+            tima_pending_start = self._tima_reload_pending
+            serial_active_start = self._serial_active and self._serial_internal_clock
 
-            if self._serial_active and self._serial_internal_clock:
-                self._serial_cycle_acc += 1
-                if self._serial_cycle_acc >= 512:
+            to_fall = step + 1
+            if timer_enabled and (not tima_pending_start):
+                to_fall = timer_period - (div_counter & timer_mask)
+
+            to_reload = step + 1
+            if tima_pending_start:
+                to_reload = int(self._tima_reload_counter)
+
+            to_shift = step + 1
+            if serial_active_start:
+                to_shift = 512 - int(self._serial_cycle_acc)
+
+            step = min(step, to_fall, to_reload, to_shift)
+
+            timer_event = timer_enabled and (not tima_pending_start) and (step == to_fall)
+            reload_event = tima_pending_start and (step == to_reload)
+            serial_event = serial_active_start and (step == to_shift)
+
+            div_counter = (div_counter + step) & 0xFFFF
+            processed += step
+            remaining -= step
+
+            overflow_started = False
+            if timer_event:
+                overflow_started = self._tima_increment(global_cycles_before=gc_start + processed - 1)
+
+            if tima_pending_start:
+                self._tima_reload_counter -= step
+            elif overflow_started:
+                self._tima_reload_counter -= 1
+
+            if self._tima_reload_pending and self._tima_reload_counter <= 0:
+                self._tima_reload_pending = False
+                self._tima_reload_counter = 0
+                regs[0x05] = regs[0x06]
+                self.request_interrupt(TIMER_INTERRUPT_MASK)
+
+            if serial_active_start:
+                self._serial_cycle_acc += step
+                if serial_event and self._serial_cycle_acc >= 512:
                     self._serial_cycle_acc -= 512
-                    self.regs[0x01] = ((self.regs[0x01] << 1) & 0xFF) | 0x01
+                    regs[0x01] = ((regs[0x01] << 1) & 0xFF) | 0x01
                     self._serial_bits_left -= 1
                     if self._serial_bits_left <= 0:
                         self._serial_active = False
-                        self.regs[0x02] &= 0x01
+                        regs[0x02] &= 0x01
                         self.request_interrupt(SERIAL_INTERRUPT_MASK)
                         self._serial_out.append(chr(self._serial_latch_out))
 
-            self._global_cycles += 1
+        self._div_counter = div_counter
+        regs[0x04] = (div_counter >> 8) & 0xFF
+        self._global_cycles = gc_start + cycles
 
     def request_interrupt(self, mask: int) -> None:
         self.interrupt_flag = (self.interrupt_flag | (mask & 0x1F) | 0xE0) & 0xFF
