@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import re
 import sys
 import time
@@ -105,7 +106,7 @@ def run_one_rom(
 				return TestResult(rom=rom_path, status="TIMEOUT", serial=serial, elapsed_s=time.monotonic() - start, cycles=cycles)
 
 			op = gb.bus.read_byte(gb.cpu.pc)
-			if op == 0x40:  # LD B,B
+			if op == 0x40:
 				r = gb.cpu.regs
 				sig = (r.b & 0xFF, r.c & 0xFF, r.d & 0xFF, r.e & 0xFF, r.h & 0xFF, r.l & 0xFF)
 				if sig == pass_regs:
@@ -185,7 +186,11 @@ def main(argv: list[str] | None = None) -> int:
 		default=None,
 		help="Skip ROMs that have this path part (repeatable). Default: manual-only, madness, utils",
 	)
+	parser.add_argument("--debug", action="store_true", help="Enable debug logging (CPU trace)")
 	args = parser.parse_args(argv)
+
+	if args.debug:
+		logging.basicConfig(level=logging.DEBUG, format="%(message)s")
 
 	rom_dir: Path | None = args.rom_dir
 	if rom_dir is None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import time
 from pathlib import Path
 
@@ -11,7 +12,12 @@ def main() -> int:
 	parser.add_argument("--scale", type=int, default=3, help="Window scale (default: 3)")
 	parser.add_argument("--fps", type=int, default=60, help="FPS cap (default: 60)")
 	parser.add_argument("--headless", action="store_true", help="Run without a window")
+	parser.add_argument("--debug", action="store_true", help="Enable debug logging (CPU trace)")
+	parser.add_argument("--print-results", action="store_true", help="Print detailed test results")
 	args = parser.parse_args()
+
+	if args.debug:
+		logging.basicConfig(level=logging.DEBUG, format="%(message)s")
 
 	from gb.gameboy import GameBoy
 	from gb.ppu import SCREEN_H, SCREEN_W
@@ -21,6 +27,7 @@ def main() -> int:
 	if args.headless:
 		for _ in range(120):
 			gb.run_until_frame()
+
 		return 0
 
 	try:

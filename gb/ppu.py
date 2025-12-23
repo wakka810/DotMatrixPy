@@ -16,6 +16,13 @@ VBLANK_END_LINE = 154
 VBLANK_INTERRUPT_MASK = 1 << 0
 STAT_INTERRUPT_MASK = 1 << 1
 
+LINE0_MODE0_END = 86
+LINE0_MODE3_END = 258
+
+POST_ENABLE_MODE2_DELAY = 6
+POST_ENABLE_DELAY_LINES = 2
+COINCIDENCE_SET_DELAY_DOT = 4
+
 
 def _to_signed8(v: int) -> int:
     v &= 0xFF
@@ -24,9 +31,6 @@ def _to_signed8(v: int) -> int:
 
 Sprite = Tuple[int, int, int, int, int]
 
-# Mooneye sprite timing overrides (acceptance/ppu/intr_2_mode0_timing_sprites)
-# Key: sorted tuple of OAM X positions for sprites on the scanline (max 10).
-# Value: extra mode3 length in M-cycles.
 _SPRITE_MODE3_EXTRA_M_CYCLES = {
     (0,): 2,
     (1,): 2,
@@ -157,6 +161,10 @@ class PPU:
     _blank_frame: bool = False
 
     _window_line: int = 0
+    _line0_quirk: bool = False
+    _line_mode2_delay: int = 0
+    _post_enable_delay_lines_remaining: int = 0
+    _pending_coincidence_dot: int = -1
 
     _line_sprites: List[Sprite] = field(default_factory=list)
 
@@ -228,14 +236,63 @@ class PPU:
         return self.frame_ready
 
     def vram_accessible(self) -> bool:
-        if not self._enabled:
-            return True
-        return self._mode != 3
+        return self._vram_accessible_at_offset(0)
 
     def oam_accessible(self) -> bool:
+        return self._oam_accessible_at_offset(0)
+
+    def _oam_accessible_at_offset(self, offset: int) -> bool:
         if not self._enabled:
             return True
-        return self._mode in (0, 1)
+        offset = int(offset)
+        dot2 = self._dot + offset
+        line = self._line
+        if dot2 >= DOTS_PER_LINE:
+            dot2 = DOTS_PER_LINE - 1
+            line = self._line
+
+        if line >= VBLANK_START_LINE:
+            return True
+
+        if self._line0_quirk and line == 0:
+            return not (LINE0_MODE0_END <= dot2 < LINE0_MODE3_END)
+
+        delay = self._line_mode2_delay
+        if line != self._line:
+            delay = POST_ENABLE_MODE2_DELAY if self._post_enable_delay_lines_remaining > 0 else 0
+
+        blocked_until = delay + 80 + self._mode3_len
+        return dot2 >= blocked_until
+
+    def oam_writable(self, offset: int = 0) -> bool:
+        return self._oam_writable_at_offset(offset)
+
+    def _oam_writable_at_offset(self, offset: int) -> bool:
+        if not self._enabled:
+            return True
+        offset = int(offset)
+        dot2 = self._dot + offset
+        line = self._line
+        if dot2 >= DOTS_PER_LINE:
+            dot2 -= DOTS_PER_LINE
+            line = (line + 1) % VBLANK_END_LINE
+
+        if line >= VBLANK_START_LINE:
+            return True
+
+        if self._line0_quirk and line == 0:
+            return not (LINE0_MODE0_END <= dot2 < LINE0_MODE3_END)
+
+        delay = self._line_mode2_delay
+        if line != self._line:
+            delay = POST_ENABLE_MODE2_DELAY if self._post_enable_delay_lines_remaining > 0 else 0
+
+        blocked_until = delay + 80 + self._mode3_len
+        if delay and dot2 == delay + 78:
+            return True
+        if dot2 < delay:
+            return True
+        return dot2 >= blocked_until
 
     def _mode_at_offset(self, offset: int) -> int:
         if not self._enabled:
@@ -251,25 +308,62 @@ class PPU:
         if dot2 >= DOTS_PER_LINE:
             dot2 -= DOTS_PER_LINE
             line = (self._line + 1) % VBLANK_END_LINE
-            mode = 1 if line >= VBLANK_START_LINE else 2
-            if mode == 2 and dot2 >= 80:
-                if dot2 < 80 + self._mode3_len:
+            if line >= VBLANK_START_LINE:
+                return 1
+            delay = 0
+            if self._line0_quirk and line == 0:
+                if dot2 < LINE0_MODE0_END:
+                    return 0
+                if dot2 < LINE0_MODE3_END:
                     return 3
                 return 0
-            return mode
+            if self._post_enable_delay_lines_remaining > 0:
+                delay = POST_ENABLE_MODE2_DELAY
+            if dot2 < delay:
+                return 0
+            if dot2 < delay + 80:
+                return 2
+            if dot2 < delay + 80 + self._mode3_len:
+                return 3
+            return 0
+
+        if self._line0_quirk and self._line == 0:
+            if dot2 < LINE0_MODE0_END:
+                return 0
+            if dot2 < LINE0_MODE3_END:
+                return 3
+            return 0
 
         if mode == 2:
-            if dot2 < 80:
+            delay = self._line_mode2_delay
+            if dot2 < delay:
+                return 0
+            if dot2 < delay + 80:
                 return 2
-            if dot2 < 80 + self._mode3_len:
+            if dot2 < delay + 80 + self._mode3_len:
                 return 3
             return 0
         if mode == 3:
-            if dot2 < 80 + self._mode3_len:
+            delay = self._line_mode2_delay
+            if dot2 < delay + 80 + self._mode3_len:
                 return 3
             return 0
         if mode == 1:
             return 1
+        if self._line0_quirk:
+            if dot2 < LINE0_MODE0_END:
+                return 0
+            if dot2 < LINE0_MODE3_END:
+                return 3
+            return 0
+        if self._line < VBLANK_START_LINE and self._line_mode2_delay:
+            if dot2 < self._line_mode2_delay:
+                return 0
+            if dot2 < self._line_mode2_delay + 80:
+                return 2
+            if dot2 < self._line_mode2_delay + 80 + self._mode3_len:
+                return 3
+            return 0
         return 0
 
     def _stat_select_at_offset(self, offset: int) -> int:
@@ -279,14 +373,73 @@ class PPU:
         return self._stat_select
 
     def peek_vram_accessible(self, offset: int = 0) -> bool:
+        return self._vram_accessible_at_offset(offset)
+
+    def _vram_accessible_at_offset(self, offset: int) -> bool:
         if not self._enabled:
             return True
-        return self._mode_at_offset(offset) != 3
+        offset = int(offset)
+        dot2 = self._dot + offset
+        line = self._line
+        if dot2 >= DOTS_PER_LINE:
+            dot2 -= DOTS_PER_LINE
+            line = (line + 1) % VBLANK_END_LINE
+
+        if line >= VBLANK_START_LINE:
+            return True
+
+        if self._line0_quirk and line == 0:
+            return not (LINE0_MODE0_END <= dot2 < LINE0_MODE3_END)
+
+        delay = self._line_mode2_delay
+        if line != self._line:
+            delay = POST_ENABLE_MODE2_DELAY if self._post_enable_delay_lines_remaining > 0 else 0
+
+        if delay:
+            start = delay + 78
+            end = delay + 80 + self._mode3_len
+        else:
+            start = 80
+            end = 80 + self._mode3_len
+
+        return not (start <= dot2 < end)
+
+    def vram_writable(self, offset: int = 0) -> bool:
+        return self._vram_writable_at_offset(offset)
+
+    def _vram_writable_at_offset(self, offset: int) -> bool:
+        if not self._enabled:
+            return True
+        offset = max(0, int(offset) - 4)
+        dot2 = self._dot + offset
+        line = self._line
+        if dot2 >= DOTS_PER_LINE:
+            dot2 -= DOTS_PER_LINE
+            line = (line + 1) % VBLANK_END_LINE
+
+        if line >= VBLANK_START_LINE:
+            return True
+
+        if self._line0_quirk and line == 0:
+            line0_start = LINE0_MODE0_END - 2
+            line0_end = LINE0_MODE3_END - 2
+            return not (line0_start <= dot2 < line0_end)
+
+        delay = self._line_mode2_delay
+        if line != self._line:
+            delay = POST_ENABLE_MODE2_DELAY if self._post_enable_delay_lines_remaining > 0 else 0
+
+        if delay:
+            start = delay + 78
+            end = delay + 80 + self._mode3_len - 2
+        else:
+            start = 80
+            end = 80 + self._mode3_len
+
+        return not (start <= dot2 < end)
 
     def peek_oam_accessible(self, offset: int = 0) -> bool:
-        if not self._enabled:
-            return True
-        return self._mode_at_offset(offset) in (0, 1)
+        return self._oam_accessible_at_offset(offset)
 
     def peek_stat(self, offset: int = 0) -> int:
         select = self._stat_select_at_offset(offset)
@@ -336,6 +489,10 @@ class PPU:
         self._line = 0
         self._dot = 0
         self._mode = 0
+        self._line0_quirk = False
+        self._line_mode2_delay = 0
+        self._post_enable_delay_lines_remaining = 0
+        self._pending_coincidence_dot = -1
         self._mode3_len = 172
         self._coin = False
         self._coin_zero_delay = False
@@ -353,7 +510,11 @@ class PPU:
         self.frame_ready = False
         self._line = 0
         self._dot = 0
-        self._mode = 2
+        self._mode = 0
+        self._line0_quirk = True
+        self._line_mode2_delay = 0
+        self._post_enable_delay_lines_remaining = POST_ENABLE_DELAY_LINES
+        self._pending_coincidence_dot = -1
         self._window_line = 0
         self._lyc = io.regs[0x45] & 0xFF
         self._stat_select = io.regs[0x41] & 0x78
@@ -381,12 +542,27 @@ class PPU:
         if self._spurious_select_override_dots:
             d = min(d, self._spurious_select_override_dots)
 
-        if self._mode == 2 and self._dot < 80:
-            d = min(d, 80 - self._dot)
-        elif self._mode == 3:
-            end = 80 + self._mode3_len
-            if self._dot < end:
-                d = min(d, end - self._dot)
+        if self._pending_coincidence_dot >= 0 and self._dot < self._pending_coincidence_dot:
+            d = min(d, self._pending_coincidence_dot - self._dot)
+
+        if self._line0_quirk:
+            if self._mode == 0 and self._dot < LINE0_MODE0_END:
+                d = min(d, LINE0_MODE0_END - self._dot)
+            elif self._mode == 3 and self._dot < LINE0_MODE3_END:
+                d = min(d, LINE0_MODE3_END - self._dot)
+        else:
+            if self._line < VBLANK_START_LINE:
+                delay = self._line_mode2_delay
+                if self._mode == 0 and delay and self._dot < delay:
+                    d = min(d, delay - self._dot)
+                elif self._mode == 2:
+                    end2 = delay + 80
+                    if self._dot < end2:
+                        d = min(d, end2 - self._dot)
+                elif self._mode == 3:
+                    end = delay + 80 + self._mode3_len
+                    if self._dot < end:
+                        d = min(d, end - self._dot)
 
         return max(1, d)
 
@@ -396,24 +572,54 @@ class PPU:
                 self._update_ly_register()
                 self._coin_zero_delay = True
 
-            if self._mode == 2 and self._dot == 80:
-                self._mode = 3
-                self._write_stat()
-                self._update_stat_irq()
+            if self._pending_coincidence_dot >= 0 and self._dot == self._pending_coincidence_dot:
+                self._pending_coincidence_dot = -1
+                self._update_coincidence(immediate=True)
                 continue
 
-            if self._mode == 3 and self._dot == 80 + self._mode3_len:
-                if self._line < VBLANK_START_LINE and (not self._blank_frame):
-                    self._render_scanline(self._line)
-                self._mode = 0
-                self._write_stat()
-                self._update_stat_irq()
-                continue
+            if self._line0_quirk:
+                if self._mode == 0 and self._dot == LINE0_MODE0_END:
+                    self._mode = 3
+                    self._write_stat()
+                    self._update_stat_irq()
+                    continue
+                if self._mode == 3 and self._dot == LINE0_MODE3_END:
+                    self._mode = 0
+                    self._write_stat()
+                    self._update_stat_irq()
+                    continue
+                if self._dot >= DOTS_PER_LINE:
+                    self._dot -= DOTS_PER_LINE
+                    self._line0_quirk = False
+                    self._advance_line()
+                    continue
+            else:
+                delay = self._line_mode2_delay
+                if self._mode == 0 and delay and self._dot == delay:
+                    self._mode = 2
+                    self._prepare_visible_line()
+                    self._write_stat()
+                    self._update_stat_irq()
+                    continue
 
-            if self._dot >= DOTS_PER_LINE:
-                self._dot -= DOTS_PER_LINE
-                self._advance_line()
-                continue
+                if self._mode == 2 and self._dot == delay + 80:
+                    self._mode = 3
+                    self._write_stat()
+                    self._update_stat_irq()
+                    continue
+
+                if self._mode == 3 and self._dot == delay + 80 + self._mode3_len:
+                    if self._line < VBLANK_START_LINE and (not self._blank_frame):
+                        self._render_scanline(self._line)
+                    self._mode = 0
+                    self._write_stat()
+                    self._update_stat_irq()
+                    continue
+
+                if self._dot >= DOTS_PER_LINE:
+                    self._dot -= DOTS_PER_LINE
+                    self._advance_line()
+                    continue
 
             if self._coin_zero_delay and self._line == 153 and self._dot == 8:
                 self._coin_zero_delay = False
@@ -446,7 +652,19 @@ class PPU:
             if not self._blank_frame:
                 self.framebuffer[:] = bytes([0]) * (SCREEN_W * SCREEN_H)
 
-        self._mode = 1 if self._line >= VBLANK_START_LINE else 2
+        if self._line >= VBLANK_START_LINE:
+            self._line_mode2_delay = 0
+            self._mode = 1
+        else:
+            delay = 0
+            if self._post_enable_delay_lines_remaining > 0:
+                delay = POST_ENABLE_MODE2_DELAY
+                self._post_enable_delay_lines_remaining -= 1
+            self._line_mode2_delay = delay
+            if delay:
+                self._mode = 0
+            else:
+                self._mode = 2
 
         if self._line == VBLANK_START_LINE:
             io.request_interrupt(VBLANK_INTERRUPT_MASK)
@@ -458,7 +676,15 @@ class PPU:
         self._update_ly_register()
         if not (self._line == 153 and self._dot >= 4):
             self._coin_zero_delay = False
-            self._update_coincidence(immediate=True)
+            if (
+                self._line < VBLANK_START_LINE
+                and self._line_mode2_delay
+                and (self._ly_read == (self._lyc & 0xFF))
+            ):
+                self._pending_coincidence_dot = COINCIDENCE_SET_DELAY_DOT
+            else:
+                self._pending_coincidence_dot = -1
+                self._update_coincidence(immediate=True)
         self._write_stat()
         self._update_stat_irq()
 

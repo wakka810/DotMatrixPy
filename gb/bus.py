@@ -72,7 +72,7 @@ class BUS:
             return
 
         if VRAM_BEGIN <= address <= VRAM_END:
-            if self.ppu is not None and not self.ppu.peek_vram_accessible(4):
+            if self.ppu is not None and not self.ppu.vram_writable(4):
                 return
             self.gpu.write_vram(address - VRAM_BEGIN, value)
             return
@@ -91,7 +91,7 @@ class BUS:
             return
 
         if 0xFE00 <= address <= 0xFE9F:
-            if self.ppu is not None and not self.ppu.peek_oam_accessible(4):
+            if self.ppu is not None and not self.ppu.oam_writable(4):
                 return
             self.oam[address - 0xFE00] = value
             return

@@ -4,6 +4,9 @@ from dataclasses import dataclass, field
 from typing import Callable, Tuple
 
 from gb.bus import BUS
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 Z_FLAG = 0x80
@@ -502,6 +505,31 @@ class CPU:
         return (((v & 0x0F) << 4) | ((v & 0xF0) >> 4)) & 0xFF
 
     def step(self) -> int:
+        if logger.isEnabledFor(logging.DEBUG):
+            a = self.regs.a
+            b = self.regs.b
+            c = self.regs.c
+            d = self.regs.d
+            e = self.regs.e
+            f = self.regs.f
+            h = self.regs.h
+            l = self.regs.l
+            sp = self.sp
+            pc = self.pc
+            
+            pcmem = []
+            for i in range(4):
+                try:
+                    val = self._read8(pc + i)
+                    pcmem.append(f"{val:02X}")
+                except Exception:
+                    pcmem.append("??")
+            pcmem_str = ",".join(pcmem)
+            
+            logger.debug(
+                f"A:{a:02X} F:{f:02X} B:{b:02X} C:{c:02X} D:{d:02X} E:{e:02X} H:{h:02X} L:{l:02X} SP:{sp:04X} PC:{pc:04X} PCMEM:{pcmem_str}"
+            )
+
         ei_apply = self._ei_pending
 
         if self.stopped:

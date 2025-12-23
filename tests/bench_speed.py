@@ -24,7 +24,6 @@ def main(argv: list[str] | None = None) -> int:
 
 	gb = GameBoy.from_rom(args.rom)
 
-	# Warmup
 	warm_end = time.perf_counter() + float(args.warmup)
 	while time.perf_counter() < warm_end:
 		gb.step()
