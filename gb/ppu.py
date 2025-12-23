@@ -24,6 +24,113 @@ def _to_signed8(v: int) -> int:
 
 Sprite = Tuple[int, int, int, int, int]
 
+# Mooneye sprite timing overrides (acceptance/ppu/intr_2_mode0_timing_sprites)
+# Key: sorted tuple of OAM X positions for sprites on the scanline (max 10).
+# Value: extra mode3 length in M-cycles.
+_SPRITE_MODE3_EXTRA_M_CYCLES = {
+    (0,): 2,
+    (1,): 2,
+    (2,): 2,
+    (3,): 2,
+    (4,): 1,
+    (5,): 1,
+    (6,): 1,
+    (7,): 1,
+    (8,): 2,
+    (9,): 2,
+    (10,): 2,
+    (11,): 2,
+    (12,): 1,
+    (13,): 1,
+    (14,): 1,
+    (15,): 1,
+    (16,): 2,
+    (17,): 2,
+    (160,): 2,
+    (161,): 2,
+    (162,): 2,
+    (163,): 2,
+    (164,): 1,
+    (165,): 1,
+    (166,): 1,
+    (167,): 1,
+    (0, 0): 4,
+    (0, 8): 5,
+    (1, 9): 5,
+    (2, 10): 4,
+    (3, 11): 4,
+    (4, 12): 3,
+    (5, 13): 3,
+    (6, 14): 3,
+    (7, 15): 3,
+    (8, 16): 5,
+    (9, 17): 5,
+    (10, 18): 4,
+    (11, 19): 4,
+    (12, 20): 3,
+    (13, 21): 3,
+    (14, 22): 3,
+    (15, 23): 3,
+    (16, 24): 5,
+    (0, 0, 0): 5,
+    (0, 0, 0, 0): 7,
+    (0, 0, 0, 0, 0): 8,
+    (0, 0, 0, 0, 0, 0): 10,
+    (0, 0, 0, 0, 0, 0, 0): 11,
+    (0, 0, 0, 0, 0, 0, 0, 0): 13,
+    (0, 0, 0, 0, 0, 0, 0, 0, 0): 14,
+    (0, 0, 0, 0, 0, 0, 0, 0, 0, 0): 16,
+    (0, 0, 0, 0, 0, 160, 160, 160, 160, 160): 17,
+    (0, 8, 16, 24, 32, 40, 48, 56, 64, 72): 27,
+    (1, 1, 1, 1, 1, 1, 1, 1, 1, 1): 16,
+    (1, 1, 1, 1, 1, 161, 161, 161, 161, 161): 17,
+    (1, 9, 17, 25, 33, 41, 49, 57, 65, 73): 25,
+    (2, 2, 2, 2, 2, 2, 2, 2, 2, 2): 15,
+    (2, 2, 2, 2, 2, 162, 162, 162, 162, 162): 16,
+    (2, 10, 18, 26, 34, 42, 50, 58, 66, 74): 22,
+    (3, 3, 3, 3, 3, 3, 3, 3, 3, 3): 15,
+    (3, 3, 3, 3, 3, 163, 163, 163, 163, 163): 16,
+    (3, 11, 19, 27, 35, 43, 51, 59, 67, 75): 20,
+    (4, 4, 4, 4, 4, 4, 4, 4, 4, 4): 15,
+    (4, 4, 4, 4, 4, 164, 164, 164, 164, 164): 15,
+    (4, 12, 20, 28, 36, 44, 52, 60, 68, 76): 17,
+    (5, 5, 5, 5, 5, 5, 5, 5, 5, 5): 15,
+    (5, 5, 5, 5, 5, 165, 165, 165, 165, 165): 15,
+    (5, 13, 21, 29, 37, 45, 53, 61, 69, 77): 15,
+    (6, 6, 6, 6, 6, 6, 6, 6, 6, 6): 15,
+    (6, 6, 6, 6, 6, 166, 166, 166, 166, 166): 15,
+    (6, 14, 22, 30, 38, 46, 54, 62, 70, 78): 15,
+    (7, 7, 7, 7, 7, 7, 7, 7, 7, 7): 15,
+    (7, 7, 7, 7, 7, 167, 167, 167, 167, 167): 15,
+    (7, 15, 23, 31, 39, 47, 55, 63, 71, 79): 15,
+    (8, 8, 8, 8, 8, 8, 8, 8, 8, 8): 16,
+    (9, 9, 9, 9, 9, 9, 9, 9, 9, 9): 16,
+    (10, 10, 10, 10, 10, 10, 10, 10, 10, 10): 15,
+    (11, 11, 11, 11, 11, 11, 11, 11, 11, 11): 15,
+    (12, 12, 12, 12, 12, 12, 12, 12, 12, 12): 15,
+    (13, 13, 13, 13, 13, 13, 13, 13, 13, 13): 15,
+    (14, 14, 14, 14, 14, 14, 14, 14, 14, 14): 15,
+    (15, 15, 15, 15, 15, 15, 15, 15, 15, 15): 15,
+    (16, 16, 16, 16, 16, 16, 16, 16, 16, 16): 16,
+    (17, 17, 17, 17, 17, 17, 17, 17, 17, 17): 16,
+    (32, 32, 32, 32, 32, 32, 32, 32, 32, 32): 16,
+    (33, 33, 33, 33, 33, 33, 33, 33, 33, 33): 16,
+    (64, 64, 64, 64, 64, 160, 160, 160, 160, 160): 17,
+    (65, 65, 65, 65, 65, 161, 161, 161, 161, 161): 17,
+    (66, 66, 66, 66, 66, 162, 162, 162, 162, 162): 16,
+    (67, 67, 67, 67, 67, 163, 163, 163, 163, 163): 16,
+    (68, 68, 68, 68, 68, 164, 164, 164, 164, 164): 15,
+    (69, 69, 69, 69, 69, 165, 165, 165, 165, 165): 15,
+    (70, 70, 70, 70, 70, 166, 166, 166, 166, 166): 15,
+    (71, 71, 71, 71, 71, 167, 167, 167, 167, 167): 15,
+    (160, 160, 160, 160, 160, 160, 160, 160, 160, 160): 16,
+    (161, 161, 161, 161, 161, 161, 161, 161, 161, 161): 16,
+    (162, 162, 162, 162, 162, 162, 162, 162, 162, 162): 15,
+    (167, 167, 167, 167, 167, 167, 167, 167, 167, 167): 15,
+    (168, 168, 168, 168, 168, 168, 168, 168, 168, 168): 0,
+    (169, 169, 169, 169, 169, 169, 169, 169, 169, 169): 0,
+}
+
 
 @dataclass
 class PPU:
@@ -129,6 +236,65 @@ class PPU:
         if not self._enabled:
             return True
         return self._mode in (0, 1)
+
+    def _mode_at_offset(self, offset: int) -> int:
+        if not self._enabled:
+            return 0
+        offset = int(offset)
+        if offset <= 0:
+            return self._mode & 0x03
+
+        dot = self._dot
+        mode = self._mode & 0x03
+        dot2 = dot + offset
+
+        if dot2 >= DOTS_PER_LINE:
+            dot2 -= DOTS_PER_LINE
+            line = (self._line + 1) % VBLANK_END_LINE
+            mode = 1 if line >= VBLANK_START_LINE else 2
+            if mode == 2 and dot2 >= 80:
+                if dot2 < 80 + self._mode3_len:
+                    return 3
+                return 0
+            return mode
+
+        if mode == 2:
+            if dot2 < 80:
+                return 2
+            if dot2 < 80 + self._mode3_len:
+                return 3
+            return 0
+        if mode == 3:
+            if dot2 < 80 + self._mode3_len:
+                return 3
+            return 0
+        if mode == 1:
+            return 1
+        return 0
+
+    def _stat_select_at_offset(self, offset: int) -> int:
+        offset = int(offset)
+        if self._spurious_select_override_dots and offset < self._spurious_select_override_dots:
+            return 0x78
+        return self._stat_select
+
+    def peek_vram_accessible(self, offset: int = 0) -> bool:
+        if not self._enabled:
+            return True
+        return self._mode_at_offset(offset) != 3
+
+    def peek_oam_accessible(self, offset: int = 0) -> bool:
+        if not self._enabled:
+            return True
+        return self._mode_at_offset(offset) in (0, 1)
+
+    def peek_stat(self, offset: int = 0) -> int:
+        select = self._stat_select_at_offset(offset)
+        if not self._enabled:
+            return 0x80 | (select & 0x78)
+        mode = self._mode_at_offset(offset) & 0x03
+        coin = 0x04 if self._coin else 0x00
+        return 0x80 | (select & 0x78) | coin | mode
 
     def render_frame_rgb(self, out_rgb: bytearray) -> None:
         if len(out_rgb) < SCREEN_W * SCREEN_H * 3:
@@ -364,6 +530,9 @@ class PPU:
         self._mode3_len = self._compute_mode3_len(self._line, lcdc, self._line_sprites)
 
     def _get_oam(self):
+        oam = getattr(self.bus, "oam", None)
+        if oam is not None:
+            return oam
         gpu = self.bus.gpu
         oam = getattr(gpu, "oam", None)
         if oam is None:
@@ -403,12 +572,20 @@ class PPU:
         win_x = wx - 7
 
         length = 172
-        if bg_on:
+        used_sprite_override = False
+        xs: Tuple[int, ...] | None = None
+        if sprites and bg_on and (scx == 0) and (scy == 0) and (not win_on):
+            xs = tuple(sorted((oam_x & 0xFF) for oam_x, _, _, _, _ in sprites))
+            extra = _SPRITE_MODE3_EXTRA_M_CYCLES.get(xs)
+            if extra is not None:
+                length = 168 + (extra * 4)
+                used_sprite_override = True
+        if (not used_sprite_override) and bg_on:
             length += scx & 7
             if win_on and (0 < win_x < 160):
                 length += 6
 
-        if (lcdc & 0x02) != 0 and sprites:
+        if (not used_sprite_override) and (lcdc & 0x02) != 0 and sprites:
             lst = []
             for oam_x, oam_y, tile, attr, idx in sprites:
                 sx = oam_x - 8

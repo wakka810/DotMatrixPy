@@ -956,4 +956,3 @@ class CPU:
         self.push_u16((self.pc + (op_off & 1)) & 0xFFFF)
         self.pc = vec
         return 16
-

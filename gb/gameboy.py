@@ -20,6 +20,7 @@ class GameBoy:
 	def __post_init__(self) -> None:
 		self.cpu = CPU(bus=self.bus)
 		self.ppu = PPU(bus=self.bus)
+		self.bus.ppu = self.ppu
 
 	@classmethod
 	def from_rom(cls, rom_path: str | Path) -> "GameBoy":

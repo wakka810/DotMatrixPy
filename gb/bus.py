@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 from .cartridge import Cartridge
 from .gpu import GPU, VRAM_BEGIN, VRAM_END
 from .io import IO
+
+if TYPE_CHECKING:
+    from .ppu import PPU
 
 
 @dataclass
@@ -13,6 +16,7 @@ class BUS:
     cartridge: Optional[Cartridge] = None
     gpu: GPU = field(default_factory=GPU)
     io: IO = field(default_factory=IO)
+    ppu: Optional["PPU"] = None
 
     wram: bytearray = field(default_factory=lambda: bytearray(0x2000))
     hram: bytearray = field(default_factory=lambda: bytearray(0x7F))
@@ -27,6 +31,8 @@ class BUS:
             return self.cartridge.read_rom(address)
 
         if VRAM_BEGIN <= address <= VRAM_END:
+            if self.ppu is not None and not self.ppu.peek_vram_accessible(4):
+                return 0xFF
             return self.gpu.read_vram(address - VRAM_BEGIN)
 
         if 0xA000 <= address <= 0xBFFF:
@@ -41,7 +47,12 @@ class BUS:
             return self.wram[address - 0xE000] & 0xFF
 
         if 0xFE00 <= address <= 0xFE9F:
+            if self.ppu is not None and not self.ppu.peek_oam_accessible(4):
+                return 0xFF
             return self.oam[address - 0xFE00] & 0xFF
+
+        if address == 0xFF41 and self.ppu is not None:
+            return self.ppu.peek_stat(4)
 
         if (0xFF00 <= address <= 0xFF7F) or address in (0xFF0F, 0xFFFF):
             return self.io.read(address)
@@ -61,6 +72,8 @@ class BUS:
             return
 
         if VRAM_BEGIN <= address <= VRAM_END:
+            if self.ppu is not None and not self.ppu.peek_vram_accessible(4):
+                return
             self.gpu.write_vram(address - VRAM_BEGIN, value)
             return
 
@@ -78,6 +91,8 @@ class BUS:
             return
 
         if 0xFE00 <= address <= 0xFE9F:
+            if self.ppu is not None and not self.ppu.peek_oam_accessible(4):
+                return
             self.oam[address - 0xFE00] = value
             return
 
@@ -90,6 +105,8 @@ class BUS:
 
         if (0xFF00 <= address <= 0xFF7F) or address in (0xFF0F, 0xFFFF):
             self.io.write(address, value)
+            if self.ppu is not None and address in (0xFF40, 0xFF41, 0xFF44, 0xFF45):
+                self.ppu.notify_io_write(address, value)
             return
 
         if 0xFF80 <= address <= 0xFFFE:
