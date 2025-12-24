@@ -53,7 +53,7 @@ def _dump_trace(trace: list[tuple[int, int, int, int]]) -> None:
 		print(f"  {pc:04X}  {op:02X}  SP={sp:04X}  F={f:02X}")
 
 
-def _dump_intr_2_mode0_timing_sprites(gb, *, trace: list[tuple[int, int, int, int]]) -> None:
+def _dump_lcdon_timing_gs(gb, *, trace: list[tuple[int, int, int, int]]) -> None:
 	cpu = gb.cpu
 	regs = cpu.regs
 	bus = gb.bus
@@ -61,7 +61,7 @@ def _dump_intr_2_mode0_timing_sprites(gb, *, trace: list[tuple[int, int, int, in
 	ppu = gb.ppu
 	op = bus.read_byte(cpu.pc)
 
-	print("\n=== intr_2_mode0_timing_sprites.gb debug dump ===")
+	print("\n=== lcdon_timing-GS.gb debug dump ===")
 	print(
 		"CPU:",
 		f"PC={_hex16(cpu.pc)} OP={_hex8(op)} SP={_hex16(cpu.sp)} IME={int(bool(cpu.ime))}",
@@ -78,7 +78,10 @@ def _dump_intr_2_mode0_timing_sprites(gb, *, trace: list[tuple[int, int, int, in
 		f"FF41(STAT)={_hex8(bus.read_byte(0xFF41))}",
 		f"FF44(LY)={_hex8(io.regs[0x44])}",
 		f"FF45(LYC)={_hex8(io.regs[0x45])}",
+		f"FF42(SCY)={_hex8(io.regs[0x42])}",
 		f"FF43(SCX)={_hex8(io.regs[0x43])}",
+		f"FF4A(WY)={_hex8(io.regs[0x4A])}",
+		f"FF4B(WX)={_hex8(io.regs[0x4B])}",
 		f"FF04(DIV)={_hex8(bus.read_byte(0xFF04))}",
 		f"IF={_hex8(io.interrupt_flag)} IE={_hex8(io.interrupt_enable)}",
 	)
@@ -87,9 +90,13 @@ def _dump_intr_2_mode0_timing_sprites(gb, *, trace: list[tuple[int, int, int, in
 		f"enabled={int(bool(getattr(ppu, '_enabled', False)))}",
 		f"mode={int(getattr(ppu, '_mode', -1))} line={int(getattr(ppu, '_line', -1))} dot={int(getattr(ppu, '_dot', -1))}",
 		f"mode3_len={int(getattr(ppu, '_mode3_len', -1))}",
-		f"pending_mode0_dot={int(getattr(ppu, '_pending_stat_mode0_dot', -1))}",
+		f"line_mode2_delay={int(getattr(ppu, '_line_mode2_delay', -1))}",
+		f"post_enable_delay_lines={int(getattr(ppu, '_post_enable_delay_lines_remaining', -1))}",
+		f"pending_mode0_dot={int(getattr(ppu, '_pending_stat_mode0_dot', -1))} pending_coin_dot={int(getattr(ppu, '_pending_coincidence_dot', -1))}",
+		f"line0_quirk={int(bool(getattr(ppu, '_line0_quirk', False)))} blank_frame={int(bool(getattr(ppu, '_blank_frame', False)))}",
 		f"oam_access={int(bool(ppu.oam_accessible()))} vram_access={int(bool(ppu.vram_accessible()))}",
 	)
+	print("BUS:", f"cycle_counter={int(getattr(bus, '_cycle_counter', -1))}")
 
 	sp = cpu.sp & 0xFFFF
 	stack16 = _read_mem(bus, sp, 16)
@@ -104,7 +111,7 @@ def _run_headless_with_results(
 	timeout_s: float = 20.0,
 	serial_tail: int = 4096,
 	trace_last: int = 0,
-	dump_intr_2_mode0_timing_sprites: bool = False,
+	dump_lcdon_timing_gs: bool = False,
 ) -> int:
 	from gb.gameboy import GameBoy
 
@@ -157,8 +164,8 @@ def _run_headless_with_results(
 		status = "ERROR"
 
 	print(f"\n=== Result: {status}  cycles={cycles}  elapsed={time.monotonic() - start:.2f}s ===")
-	if dump_intr_2_mode0_timing_sprites:
-		_dump_intr_2_mode0_timing_sprites(gb, trace=trace)
+	if dump_lcdon_timing_gs:
+		_dump_lcdon_timing_gs(gb, trace=trace)
 
 	return 0 if status == "PASS" else 1
 
@@ -183,12 +190,12 @@ def main() -> int:
 
 	if args.headless:
 		rom_name = args.rom.name.lower()
-		is_intr_2_mode0_timing_sprites = rom_name == "intr_2_mode0_timing_sprites.gb"
-		if args.print_results or is_intr_2_mode0_timing_sprites:
+		is_lcdon_timing_gs = rom_name == "lcdon_timing-gs.gb"
+		if args.print_results or is_lcdon_timing_gs:
 			return _run_headless_with_results(
 				args.rom,
-				trace_last=128 if is_intr_2_mode0_timing_sprites else 0,
-				dump_intr_2_mode0_timing_sprites=is_intr_2_mode0_timing_sprites,
+				trace_last=128 if is_lcdon_timing_gs else 0,
+				dump_lcdon_timing_gs=is_lcdon_timing_gs,
 			)
 
 		for _ in range(120):

@@ -19,6 +19,7 @@ STAT_INTERRUPT_MASK = 1 << 1
 LINE0_MODE0_END = 86
 LINE0_MODE3_END = 258
 
+ENABLE_DELAY_DOTS = 2
 POST_ENABLE_MODE2_DELAY = 6
 POST_ENABLE_DELAY_LINES = 2
 COINCIDENCE_SET_DELAY_DOT = 4
@@ -147,6 +148,7 @@ class PPU:
     _dot: int = 0
     _mode: int = 0
     _mode3_len: int = 172
+    _enable_delay_dots: int = 0
 
     _ly_read: int = 0
     _lyc: int = 0
@@ -218,6 +220,19 @@ class PPU:
             self._handle_stat_write(io.regs[0x41] & 0xFF)
 
         while t_cycles > 0 and self._enabled:
+            if self._enable_delay_dots:
+                step = min(t_cycles, self._enable_delay_dots)
+                self._enable_delay_dots -= step
+                if self._spurious_select_override_dots:
+                    if step >= self._spurious_select_override_dots:
+                        self._spurious_select_override_dots = 0
+                    else:
+                        self._spurious_select_override_dots -= step
+                t_cycles -= step
+                if t_cycles <= 0:
+                    break
+                continue
+
             step = self._next_event_distance()
             if step > t_cycles:
                 step = t_cycles
@@ -245,12 +260,12 @@ class PPU:
     def _oam_accessible_at_offset(self, offset: int) -> bool:
         if not self._enabled:
             return True
-        offset = int(offset)
+        offset = self._offset_after_enable_delay(offset)
         dot2 = self._dot + offset
         line = self._line
         if dot2 >= DOTS_PER_LINE:
-            dot2 = DOTS_PER_LINE - 1
-            line = self._line
+            dot2 -= DOTS_PER_LINE
+            line = (line + 1) % VBLANK_END_LINE
 
         if line >= VBLANK_START_LINE:
             return True
@@ -271,7 +286,7 @@ class PPU:
     def _oam_writable_at_offset(self, offset: int) -> bool:
         if not self._enabled:
             return True
-        offset = int(offset)
+        offset = self._offset_after_enable_delay(offset)
         dot2 = self._dot + offset
         line = self._line
         if dot2 >= DOTS_PER_LINE:
@@ -298,7 +313,7 @@ class PPU:
     def _mode_at_offset(self, offset: int) -> int:
         if not self._enabled:
             return 0
-        offset = int(offset)
+        offset = self._offset_after_enable_delay(offset)
         if offset <= 0:
             return self._mode & 0x03
 
@@ -379,7 +394,7 @@ class PPU:
     def _vram_accessible_at_offset(self, offset: int) -> bool:
         if not self._enabled:
             return True
-        offset = int(offset)
+        offset = self._offset_after_enable_delay(offset)
         dot2 = self._dot + offset
         line = self._line
         if dot2 >= DOTS_PER_LINE:
@@ -397,7 +412,7 @@ class PPU:
             delay = POST_ENABLE_MODE2_DELAY if self._post_enable_delay_lines_remaining > 0 else 0
 
         if delay:
-            start = delay + 78
+            start = 80
             end = delay + 80 + self._mode3_len
         else:
             start = 80
@@ -412,6 +427,7 @@ class PPU:
         if not self._enabled:
             return True
         offset = max(0, int(offset) - 4)
+        offset = self._offset_after_enable_delay(offset)
         dot2 = self._dot + offset
         line = self._line
         if dot2 >= DOTS_PER_LINE:
@@ -442,7 +458,7 @@ class PPU:
     def _ly_at_offset(self, offset: int) -> int:
         if not self._enabled:
             return 0
-        offset = int(offset)
+        offset = self._offset_after_enable_delay(offset)
         if offset <= 0:
             if self._line == 153 and self._dot >= 4:
                 return 0
@@ -459,6 +475,32 @@ class PPU:
             return 0
         return line & 0xFF
 
+    def _line_dot_at_offset(self, offset: int) -> Tuple[int, int]:
+        offset = self._offset_after_enable_delay(offset)
+        dot = self._dot + offset
+        line = self._line
+        if dot >= DOTS_PER_LINE:
+            lines_advanced = dot // DOTS_PER_LINE
+            dot %= DOTS_PER_LINE
+            line = (line + lines_advanced) % VBLANK_END_LINE
+        return line, dot
+
+    def _coin_at_offset(self, offset: int) -> bool:
+        ly = self._ly_at_offset(offset)
+        if ly != (self._lyc & 0xFF):
+            return False
+
+        line, dot = self._line_dot_at_offset(offset)
+        if line < VBLANK_START_LINE:
+            if line == self._line:
+                delay = self._line_mode2_delay
+            else:
+                delay = POST_ENABLE_MODE2_DELAY if self._post_enable_delay_lines_remaining > 0 else 0
+            if delay and dot < COINCIDENCE_SET_DELAY_DOT:
+                return False
+
+        return True
+
     def peek_oam_accessible(self, offset: int = 0) -> bool:
         return self._oam_accessible_at_offset(offset)
 
@@ -468,7 +510,7 @@ class PPU:
             coin = 0x04 if self._coin else 0x00
             return 0x80 | (select & 0x78) | coin
         mode = self._mode_at_offset(offset) & 0x03
-        coin = 0x04 if self._coin else 0x00
+        coin = 0x04 if self._coin_at_offset(offset) else 0x00
         return 0x80 | (select & 0x78) | coin | mode
 
     def peek_ly(self, offset: int = 0) -> int:
@@ -514,6 +556,7 @@ class PPU:
         self._line = 0
         self._dot = 0
         self._mode = 0
+        self._enable_delay_dots = 0
         self._line0_quirk = False
         self._line_mode2_delay = 0
         self._post_enable_delay_lines_remaining = 0
@@ -534,6 +577,7 @@ class PPU:
         self._line = 0
         self._dot = 0
         self._mode = 0
+        self._enable_delay_dots = ENABLE_DELAY_DOTS
         self._line0_quirk = True
         self._line_mode2_delay = 0
         self._post_enable_delay_lines_remaining = POST_ENABLE_DELAY_LINES
@@ -587,6 +631,17 @@ class PPU:
                         d = min(d, end - self._dot)
 
         return max(1, d)
+
+    def _offset_after_enable_delay(self, offset: int) -> int:
+        offset = int(offset)
+        if offset <= 0:
+            return offset
+        delay = self._enable_delay_dots
+        if delay <= 0:
+            return offset
+        if offset <= delay:
+            return 0
+        return offset - delay
 
     def _process_boundary_events(self) -> None:
         while self._enabled:
