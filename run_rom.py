@@ -104,6 +104,110 @@ def _dump_lcdon_timing_gs(gb, *, trace: list[tuple[int, int, int, int]]) -> None
 	_dump_trace(trace)
 
 
+def _dump_tma_write_reloading(gb, *, trace: list[tuple[int, int, int, int]]) -> None:
+	cpu = gb.cpu
+	regs = cpu.regs
+	bus = gb.bus
+	io = bus.io
+	op = bus.read_byte(cpu.pc)
+
+	div = bus.read_byte(0xFF04) & 0xFF
+	tima = bus.read_byte(0xFF05) & 0xFF
+	tma = bus.read_byte(0xFF06) & 0xFF
+	tac = bus.read_byte(0xFF07) & 0xFF
+
+	print("\n=== tma_write_reloading.gb debug dump ===")
+	print(
+		"CPU:",
+		f"PC={_hex16(cpu.pc)} OP={_hex8(op)} SP={_hex16(cpu.sp)} IME={int(bool(cpu.ime))}",
+		f"HALT={int(bool(cpu.halted))} STOP={int(bool(cpu.stopped))}",
+	)
+	print(
+		"REG:",
+		f"A={_hex8(regs.a)} F={_hex8(regs.f)} B={_hex8(regs.b)} C={_hex8(regs.c)}",
+		f"D={_hex8(regs.d)} E={_hex8(regs.e)} H={_hex8(regs.h)} L={_hex8(regs.l)}",
+	)
+	print(
+		"TMR:",
+		f"DIV={_hex8(div)} TIMA={_hex8(tima)} TMA={_hex8(tma)} TAC={_hex8(tac)}",
+		f"IF={_hex8(io.interrupt_flag)} IE={_hex8(io.interrupt_enable)}",
+	)
+
+	# Internal/pending timer state (useful for TMA write timing around reload).
+	tac_val = io.regs[0x07] & 0x07
+	timer_enabled = (tac_val & 0x04) != 0
+	timer_bit = io._timer_bit(tac_val) if timer_enabled else -1
+	div_counter = int(getattr(io, "_div_counter", -1)) & 0xFFFF
+	input_state = io._timer_input(tac_val, div_counter) if timer_enabled else 0
+
+	print(
+		"INT:",
+		f"global_cycles={int(getattr(io, '_global_cycles', -1))}",
+		f"div_counter={div_counter}",
+		f"timer_enabled={int(timer_enabled)} bit={timer_bit} input={input_state}",
+	)
+	print(
+		"REL:",
+		f"reload_pending={int(bool(getattr(io, '_tima_reload_pending', False)))}",
+		f"reload_counter={int(getattr(io, '_tima_reload_counter', -1))}",
+		f"overflow_cancel_until={int(getattr(io, '_tima_overflow_cancel_until', -1))}",
+	)
+	print(
+		"PEND:",
+		f"div_off={getattr(io, '_div_reset_pending_offset', None)}",
+		f"tac_off={getattr(io, '_tac_pending_offset', None)} tac_old={_hex8(getattr(io, '_tac_pending_old', 0))} tac_val={_hex8(getattr(io, '_tac_pending_value', 0))}",
+		f"tima_off={getattr(io, '_tima_pending_offset', None)} tima_val={_hex8(getattr(io, '_tima_pending_value', 0))}",
+		f"tma_off={getattr(io, '_tma_pending_offset', None)} tma_val={_hex8(getattr(io, '_tma_pending_value', 0))}",
+	)
+
+	# Show predicted TIMA over the next few cycles given current internal state.
+	pred = [io._peek_tima_at_offset(i) & 0xFF for i in range(0, 9)]
+	print("PEEK:", " ".join(f"+{i}:{b:02X}" for i, b in enumerate(pred)))
+
+	sp = cpu.sp & 0xFFFF
+	stack16 = _read_mem(bus, sp, 16)
+	print("STACK[SP..SP+15]:", " ".join(f"{b:02X}" for b in stack16))
+	_dump_trace(trace)
+
+
+def _dump_boot_hwio_dmgabcmgb(gb, *, trace: list[tuple[int, int, int, int]]) -> None:
+	cpu = gb.cpu
+	regs = cpu.regs
+	bus = gb.bus
+	io = bus.io
+	op = bus.read_byte(cpu.pc)
+
+	print("\n=== boot_hwio-dmgABCmgb.gb debug dump ===")
+	print(
+		"CPU:",
+		f"PC={_hex16(cpu.pc)} OP={_hex8(op)} SP={_hex16(cpu.sp)} IME={int(bool(cpu.ime))}",
+		f"HALT={int(bool(cpu.halted))} STOP={int(bool(cpu.stopped))}",
+	)
+	print(
+		"REG:",
+		f"A={_hex8(regs.a)} F={_hex8(regs.f)} B={_hex8(regs.b)} C={_hex8(regs.c)}",
+		f"D={_hex8(regs.d)} E={_hex8(regs.e)} H={_hex8(regs.h)} L={_hex8(regs.l)}",
+	)
+	print("INT:", f"IF={_hex8(bus.read_byte(0xFF0F))} IE={_hex8(bus.read_byte(0xFFFF))}")
+
+	# Read back the full HWIO range as the CPU sees it.
+	print("IO[FF00..FF7F]:")
+	for base in range(0xFF00, 0xFF80, 0x10):
+		row = _read_mem(bus, base, 0x10)
+		print(f"  {base:04X}:", " ".join(f"{b:02X}" for b in row))
+
+	# Also show our internal IO backing regs for quick comparison.
+	print("IO.regs[00..7F] (internal):")
+	for off in range(0x00, 0x80, 0x10):
+		row = [io.regs[off + i] & 0xFF for i in range(0x10)]
+		print(f"  {off:02X}:", " ".join(f"{b:02X}" for b in row))
+
+	sp = cpu.sp & 0xFFFF
+	stack16 = _read_mem(bus, sp, 16)
+	print("STACK[SP..SP+15]:", " ".join(f"{b:02X}" for b in stack16))
+	_dump_trace(trace)
+
+
 def _run_headless_with_results(
 	rom: Path,
 	*,
@@ -111,7 +215,8 @@ def _run_headless_with_results(
 	timeout_s: float = 20.0,
 	serial_tail: int = 4096,
 	trace_last: int = 0,
-	dump_lcdon_timing_gs: bool = False,
+	dump_tma_write_reloading: bool = False,
+	dump_boot_hwio_dmgabcmgb: bool = False,
 ) -> int:
 	from gb.gameboy import GameBoy
 
@@ -164,8 +269,10 @@ def _run_headless_with_results(
 		status = "ERROR"
 
 	print(f"\n=== Result: {status}  cycles={cycles}  elapsed={time.monotonic() - start:.2f}s ===")
-	if dump_lcdon_timing_gs:
-		_dump_lcdon_timing_gs(gb, trace=trace)
+	if dump_tma_write_reloading:
+		_dump_tma_write_reloading(gb, trace=trace)
+	if dump_boot_hwio_dmgabcmgb:
+		_dump_boot_hwio_dmgabcmgb(gb, trace=trace)
 
 	return 0 if status == "PASS" else 1
 
@@ -190,12 +297,14 @@ def main() -> int:
 
 	if args.headless:
 		rom_name = args.rom.name.lower()
-		is_lcdon_timing_gs = rom_name == "lcdon_timing-gs.gb"
-		if args.print_results or is_lcdon_timing_gs:
+		is_tma_write_reloading = rom_name == "tma_write_reloading.gb"
+		is_boot_hwio_dmgabcmgb = rom_name == "boot_hwio-dmgabcmgb.gb"
+		if args.print_results or is_tma_write_reloading or is_boot_hwio_dmgabcmgb:
 			return _run_headless_with_results(
 				args.rom,
-				trace_last=128 if is_lcdon_timing_gs else 0,
-				dump_lcdon_timing_gs=is_lcdon_timing_gs,
+				trace_last=256 if (is_tma_write_reloading or is_boot_hwio_dmgabcmgb) else 0,
+				dump_tma_write_reloading=is_tma_write_reloading,
+				dump_boot_hwio_dmgabcmgb=is_boot_hwio_dmgabcmgb,
 			)
 
 		for _ in range(120):

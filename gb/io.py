@@ -187,7 +187,17 @@ class IO:
         if (old_low & (~new_low)) & 0x0F:
             self.request_interrupt(JOYPAD_INTERRUPT_MASK)
 
-    def _tick_basic(self, cycles: int) -> None:
+    def _apply_reload_if_due(self) -> None:
+        if not self._tima_reload_pending:
+            return
+        if self._tima_reload_counter > 0:
+            return
+        self._tima_reload_pending = False
+        self._tima_reload_counter = 0
+        self.regs[0x05] = self.regs[0x06]
+        self.request_interrupt(TIMER_INTERRUPT_MASK)
+
+    def _tick_basic(self, cycles: int, *, defer_reload_at: int | None = None) -> None:
         cycles = int(cycles)
         if cycles <= 0:
             return
@@ -241,14 +251,12 @@ class IO:
 
             if tima_pending_start:
                 self._tima_reload_counter -= step
-            elif overflow_started:
-                self._tima_reload_counter -= 1
 
             if self._tima_reload_pending and self._tima_reload_counter <= 0:
-                self._tima_reload_pending = False
-                self._tima_reload_counter = 0
-                regs[0x05] = regs[0x06]
-                self.request_interrupt(TIMER_INTERRUPT_MASK)
+                if defer_reload_at is not None and processed == defer_reload_at:
+                    self._tima_reload_counter = 0
+                else:
+                    self._apply_reload_if_due()
 
             if serial_active_start:
                 self._serial_cycle_acc += step
@@ -288,7 +296,7 @@ class IO:
     def _apply_tima_write(self) -> None:
         value = self._tima_pending_value & 0xFF
         if self._tima_reload_pending:
-            if self._global_cycles < self._tima_overflow_cancel_until:
+            if self._global_cycles <= self._tima_overflow_cancel_until:
                 self._tima_reload_pending = False
                 self._tima_reload_counter = 0
                 self.regs[0x05] = value
@@ -344,7 +352,7 @@ class IO:
                 break
 
             if event_offset > 0:
-                self._tick_basic(event_offset)
+                self._tick_basic(event_offset, defer_reload_at=event_offset)
                 remaining -= event_offset
                 self._shift_pending_offsets(event_offset)
             if event_kind == "div":
@@ -359,6 +367,7 @@ class IO:
             else:
                 self._apply_tma_write()
                 self._tma_pending_offset = None
+            self._apply_reload_if_due()
             # continue loop for any remaining cycles/events
 
     def _div_counter_at_offset(self, offset: int) -> int:
@@ -411,7 +420,6 @@ class IO:
                     tima = 0x00
                     reload_pending = True
                     reload_counter = 4
-                    reload_counter -= 1
                 else:
                     tima = (tima + 1) & 0xFF
 
