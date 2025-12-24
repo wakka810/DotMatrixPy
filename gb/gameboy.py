@@ -46,7 +46,7 @@ class GameBoy:
 		io = self.bus.io
 		io.interrupt_enable = 0x00
 		io.interrupt_flag = 0xE1
-		io.regs[0x00] = 0x30
+		io.regs[0x00] = 0x00
 
 		io.regs[0x04] = 0x00
 		io.regs[0x05] = 0x00
@@ -66,7 +66,6 @@ class GameBoy:
 		io.regs[0x4B] = 0x00
 
 		self.ppu.notify_io_write(0xFF40, io.regs[0x40])
-		self.ppu.notify_io_write(0xFF41, io.regs[0x41])
 		self.ppu.notify_io_write(0xFF45, io.regs[0x45])
 		self.ppu.notify_io_write(0xFF44, io.regs[0x44])
 

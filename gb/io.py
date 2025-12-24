@@ -70,7 +70,7 @@ class IO:
         self.interrupt_flag = 0xE1
         self.interrupt_enable = 0x00
 
-        self._div_counter = 0xAB34
+        self._div_counter = 0xAC34
         self.regs[0x04] = (self._div_counter >> 8) & 0xFF
 
         self.regs[0x10] = 0x80
