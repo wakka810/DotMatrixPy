@@ -598,6 +598,10 @@ class PPU:
                 self._pending_coincidence_dot = -1
                 self._update_coincidence(immediate=True)
                 continue
+            if self._pending_stat_mode0_dot >= 0 and self._dot == self._pending_stat_mode0_dot:
+                self._pending_stat_mode0_dot = -1
+                self._update_stat_irq()
+                continue
 
             if self._line0_quirk:
                 if self._mode == 0 and self._dot == LINE0_MODE0_END:
@@ -607,6 +611,7 @@ class PPU:
                     continue
                 if self._mode == 3 and self._dot == LINE0_MODE3_END:
                     self._mode = 0
+                    self._schedule_stat_mode0_irq()
                     self._write_stat()
                     self._update_stat_irq()
                     continue
@@ -634,6 +639,7 @@ class PPU:
                     if self._line < VBLANK_START_LINE and (not self._blank_frame):
                         self._render_scanline(self._line)
                     self._mode = 0
+                    self._schedule_stat_mode0_irq()
                     self._write_stat()
                     self._update_stat_irq()
                     continue
@@ -696,6 +702,7 @@ class PPU:
             self._prepare_visible_line()
 
         self._update_ly_register()
+        self._pending_stat_mode0_dot = -1
         if not (self._line == 153 and self._dot >= 4):
             self._coin_zero_delay = False
             if (
@@ -758,7 +765,11 @@ class PPU:
 
         select = self._effective_stat_select()
         line = False
-        if (select & 0x08) and self._mode == 0:
+        if (
+            (select & 0x08)
+            and self._mode == 0
+            and not (self._pending_stat_mode0_dot >= 0 and self._dot < self._pending_stat_mode0_dot)
+        ):
             line = True
         elif (select & 0x10) and self._mode == 1:
             line = True
@@ -778,6 +789,11 @@ class PPU:
         if line and (not self._stat_irq_line):
             self.bus.io.request_interrupt(STAT_INTERRUPT_MASK)
         self._stat_irq_line = line
+
+    def _schedule_stat_mode0_irq(self) -> None:
+        if self._effective_stat_select() & 0x08:
+            # DMG timing: mode 0 STAT IRQ is observed one M-cycle after mode 0 begins.
+            self._pending_stat_mode0_dot = self._dot + 4
 
     def _prepare_visible_line(self) -> None:
         io = self.bus.io
@@ -834,7 +850,7 @@ class PPU:
             xs = tuple(sorted((oam_x & 0xFF) for oam_x, _, _, _, _ in sprites))
             extra = _SPRITE_MODE3_EXTRA_M_CYCLES.get(xs)
             if extra is not None:
-                length = 168 + (extra * 4)
+                length = 172 + (extra * 4)
                 used_sprite_override = True
         if (not used_sprite_override) and bg_on:
             scx_mod = scx & 7

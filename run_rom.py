@@ -53,14 +53,15 @@ def _dump_trace(trace: list[tuple[int, int, int, int]]) -> None:
 		print(f"  {pc:04X}  {op:02X}  SP={sp:04X}  F={f:02X}")
 
 
-def _dump_hblank_ly_scx_timing_gs(gb, *, trace: list[tuple[int, int, int, int]]) -> None:
+def _dump_intr_2_mode0_timing_sprites(gb, *, trace: list[tuple[int, int, int, int]]) -> None:
 	cpu = gb.cpu
 	regs = cpu.regs
 	bus = gb.bus
 	io = bus.io
+	ppu = gb.ppu
 	op = bus.read_byte(cpu.pc)
 
-	print("\n=== hblank_ly_scx_timing-GS.gb debug dump (temporary) ===")
+	print("\n=== intr_2_mode0_timing_sprites.gb debug dump ===")
 	print(
 		"CPU:",
 		f"PC={_hex16(cpu.pc)} OP={_hex8(op)} SP={_hex16(cpu.sp)} IME={int(bool(cpu.ime))}",
@@ -81,15 +82,18 @@ def _dump_hblank_ly_scx_timing_gs(gb, *, trace: list[tuple[int, int, int, int]])
 		f"FF04(DIV)={_hex8(bus.read_byte(0xFF04))}",
 		f"IF={_hex8(io.interrupt_flag)} IE={_hex8(io.interrupt_enable)}",
 	)
+	print(
+		"PPU:",
+		f"enabled={int(bool(getattr(ppu, '_enabled', False)))}",
+		f"mode={int(getattr(ppu, '_mode', -1))} line={int(getattr(ppu, '_line', -1))} dot={int(getattr(ppu, '_dot', -1))}",
+		f"mode3_len={int(getattr(ppu, '_mode3_len', -1))}",
+		f"pending_mode0_dot={int(getattr(ppu, '_pending_stat_mode0_dot', -1))}",
+		f"oam_access={int(bool(ppu.oam_accessible()))} vram_access={int(bool(ppu.vram_accessible()))}",
+	)
 
 	sp = cpu.sp & 0xFFFF
 	stack16 = _read_mem(bus, sp, 16)
 	print("STACK[SP..SP+15]:", " ".join(f"{b:02X}" for b in stack16))
-
-	# hblank_ly_scx_timing-GS.s は失敗時に quit_failure_dump を使う
-	# A = SCX, B = LY値, D/E = 期待するスキャンライン周り
-	print("Failure-dump semantics (from hblank_ly_scx_timing-GS.s): A=SCX, B=LY, D=scanline-1, E=scanline")
-	print("Expected: LY increment timing depends on (SCX mod 8) -> 51/50/49 cycles after STAT mode0 interrupt")
 	_dump_trace(trace)
 
 
@@ -100,7 +104,7 @@ def _run_headless_with_results(
 	timeout_s: float = 20.0,
 	serial_tail: int = 4096,
 	trace_last: int = 0,
-	dump_hblank_ly_scx_timing_gs: bool = False,
+	dump_intr_2_mode0_timing_sprites: bool = False,
 ) -> int:
 	from gb.gameboy import GameBoy
 
@@ -153,8 +157,8 @@ def _run_headless_with_results(
 		status = "ERROR"
 
 	print(f"\n=== Result: {status}  cycles={cycles}  elapsed={time.monotonic() - start:.2f}s ===")
-	if dump_hblank_ly_scx_timing_gs:
-		_dump_hblank_ly_scx_timing_gs(gb, trace=trace)
+	if dump_intr_2_mode0_timing_sprites:
+		_dump_intr_2_mode0_timing_sprites(gb, trace=trace)
 
 	return 0 if status == "PASS" else 1
 
@@ -179,12 +183,12 @@ def main() -> int:
 
 	if args.headless:
 		rom_name = args.rom.name.lower()
-		is_hblank_ly_scx_timing_gs = rom_name == "hblank_ly_scx_timing-gs.gb"
-		if args.print_results or is_hblank_ly_scx_timing_gs:
+		is_intr_2_mode0_timing_sprites = rom_name == "intr_2_mode0_timing_sprites.gb"
+		if args.print_results or is_intr_2_mode0_timing_sprites:
 			return _run_headless_with_results(
 				args.rom,
-				trace_last=64 if is_hblank_ly_scx_timing_gs else 0,
-				dump_hblank_ly_scx_timing_gs=is_hblank_ly_scx_timing_gs,
+				trace_last=128 if is_intr_2_mode0_timing_sprites else 0,
+				dump_intr_2_mode0_timing_sprites=is_intr_2_mode0_timing_sprites,
 			)
 
 		for _ in range(120):
