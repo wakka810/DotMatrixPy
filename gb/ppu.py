@@ -167,7 +167,7 @@ class PPU:
     _line_mode2_delay: int = 0
     _post_enable_delay_lines_remaining: int = 0
     _pending_coincidence_dot: int = -1
-    _pending_stat_mode0_dot: int = -1
+    _pending_stat_mode0_dot: int = -1\
 
     _line_sprites: List[Sprite] = field(default_factory=list)
 
@@ -304,7 +304,7 @@ class PPU:
             delay = POST_ENABLE_MODE2_DELAY if self._post_enable_delay_lines_remaining > 0 else 0
 
         blocked_until = delay + 80 + self._mode3_len
-        if delay and dot2 == delay + 78:
+        if delay and dot2 == delay + 76:
             return True
         if dot2 < delay:
             return True
@@ -426,7 +426,7 @@ class PPU:
     def _vram_writable_at_offset(self, offset: int) -> bool:
         if not self._enabled:
             return True
-        offset = max(0, int(offset) - 4)
+        # offset = max(0, int(offset) - 4)
         offset = self._offset_after_enable_delay(offset)
         dot2 = self._dot + offset
         line = self._line
