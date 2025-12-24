@@ -168,27 +168,30 @@ class CPU:
 
         self._op_table = t
 
-    def push_u16(self, value: int) -> None:
+    def push_u16(self, value: int, offset_hi: int = 0, offset_lo: int = 0) -> None:
         value &= 0xFFFF
         msb = (value >> 8) & 0xFF
         lsb = value & 0xFF
         self.sp = (self.sp - 1) & 0xFFFF
-        self.bus.write_byte(self.sp, msb)
+        self._write8(self.sp, msb, offset=offset_hi)
         self.sp = (self.sp - 1) & 0xFFFF
-        self.bus.write_byte(self.sp, lsb)
+        self._write8(self.sp, lsb, offset=offset_lo)
 
-    def pop_u16(self) -> int:
-        lsb = self.bus.read_byte(self.sp) & 0xFF
+    def pop_u16(self, offset_lo: int = 0, offset_hi: int = 0) -> int:
+        lsb = self._read8(self.sp, offset=offset_lo) & 0xFF
         self.sp = (self.sp + 1) & 0xFFFF
-        msb = self.bus.read_byte(self.sp) & 0xFF
+        msb = self._read8(self.sp, offset=offset_hi) & 0xFF
         self.sp = (self.sp + 1) & 0xFFFF
         return ((msb << 8) | lsb) & 0xFFFF
 
-    def _read8(self, addr: int) -> int:
-        return self.bus.read_byte(addr & 0xFFFF) & 0xFF
+    def _fetch8(self, addr: int, offset: int = 0) -> int:
+        return self.bus.read_byte(addr & 0xFFFF, cpu_offset=int(offset)) & 0xFF
 
-    def _write8(self, addr: int, value: int) -> None:
-        self.bus.write_byte(addr & 0xFFFF, value & 0xFF)
+    def _read8(self, addr: int, offset: int = 0) -> int:
+        return self.bus.read_byte(addr & 0xFFFF, cpu_offset=int(offset)) & 0xFF
+
+    def _write8(self, addr: int, value: int, offset: int = 0) -> None:
+        self.bus.write_byte(addr & 0xFFFF, value & 0xFF, cpu_offset=int(offset))
 
     def _read16(self, addr: int) -> int:
         lo = self._read8(addr)
@@ -234,17 +237,17 @@ class CPU:
         lsb = pc & 0xFF
 
         self.sp = (self.sp - 1) & 0xFFFF
-        self.bus.write_byte(self.sp, msb)
+        self._write8(self.sp, msb, offset=8)
 
         pending = self._interrupt_pending()
         if pending == 0:
             self.sp = (self.sp - 1) & 0xFFFF
-            self.bus.write_byte(self.sp, lsb)
+            self._write8(self.sp, lsb, offset=12)
             self.pc = 0x0000
             return 20
 
         self.sp = (self.sp - 1) & 0xFFFF
-        self.bus.write_byte(self.sp, lsb)
+        self._write8(self.sp, lsb, offset=12)
 
         for i, vector in enumerate((0x40, 0x48, 0x50, 0x58, 0x60)):
             if pending & (1 << i):
@@ -258,10 +261,13 @@ class CPU:
 
 
     def _imm8(self, off: int) -> int:
-        return self._read8((self.pc + off) & 0xFFFF)
+        return self._read8((self.pc + off) & 0xFFFF, offset=4)
 
     def _imm16(self, off: int) -> int:
-        return self._read16((self.pc + off) & 0xFFFF)
+        addr = (self.pc + off) & 0xFFFF
+        lo = self._read8(addr, offset=4)
+        hi = self._read8((addr + 1) & 0xFFFF, offset=8)
+        return ((hi << 8) | lo) & 0xFFFF
 
     def _imm8s(self, off: int) -> int:
         b = self._imm8(off)
@@ -294,7 +300,7 @@ class CPU:
         if idx == 5:
             return self.regs.l & 0xFF
         if idx == 6:
-            return self._read8(self.regs.get_hl())
+            return self._read8(self.regs.get_hl(), offset=4)
         return self.regs.a & 0xFF
 
     def _reg8_set(self, idx: int, value: int) -> None:
@@ -313,7 +319,7 @@ class CPU:
         elif idx == 5:
             self.regs.l = value
         elif idx == 6:
-            self._write8(self.regs.get_hl(), value)
+            self._write8(self.regs.get_hl(), value, offset=4)
         else:
             self.regs.a = value
 
@@ -555,9 +561,9 @@ class CPU:
         op_off = 0 if self._halt_bug else 1
         self._halt_bug = False
 
-        opcode = self._read8(self.pc)
+        opcode = self._fetch8(self.pc)
         if opcode == 0xCB:
-            cb = self._read8((self.pc + op_off) & 0xFFFF)
+            cb = self._fetch8((self.pc + op_off) & 0xFFFF, offset=4)
             cycles = self._exec_cb(cb, op_off)
         else:
             cycles = self._exec(opcode, op_off)
@@ -693,7 +699,8 @@ class CPU:
     def _op_ld_a16_sp(self, opcode: int, op_off: int) -> int:
         inc3 = 2 + (op_off & 1)
         addr = self._imm16(op_off)
-        self._write16(addr, self.sp)
+        self._write8(addr, self.sp & 0xFF, offset=12)
+        self._write8((addr + 1) & 0xFFFF, (self.sp >> 8) & 0xFF, offset=16)
         self.pc = (self.pc + inc3) & 0xFFFF
         return 20
 
@@ -725,26 +732,26 @@ class CPU:
 
     def _op_ld_mem_rr_a(self, opcode: int, op_off: int) -> int:
         addr = self.regs.get_bc() if opcode == 0x02 else self.regs.get_de()
-        self._write8(addr, self.regs.a)
+        self._write8(addr, self.regs.a, offset=4)
         self.pc = (self.pc + (op_off & 1)) & 0xFFFF
         return 8
 
     def _op_ld_a_mem_rr(self, opcode: int, op_off: int) -> int:
         addr = self.regs.get_bc() if opcode == 0x0A else self.regs.get_de()
-        self.regs.a = self._read8(addr)
+        self.regs.a = self._read8(addr, offset=4)
         self.pc = (self.pc + (op_off & 1)) & 0xFFFF
         return 8
 
     def _op_ld_hli_a(self, opcode: int, op_off: int) -> int:
         addr = self.regs.get_hl()
-        self._write8(addr, self.regs.a)
+        self._write8(addr, self.regs.a, offset=4)
         self.regs.set_hl((addr + 1) & 0xFFFF if opcode == 0x22 else (addr - 1) & 0xFFFF)
         self.pc = (self.pc + (op_off & 1)) & 0xFFFF
         return 8
 
     def _op_ld_a_hli(self, opcode: int, op_off: int) -> int:
         addr = self.regs.get_hl()
-        self.regs.a = self._read8(addr)
+        self.regs.a = self._read8(addr, offset=4)
         self.regs.set_hl((addr + 1) & 0xFFFF if opcode == 0x2A else (addr - 1) & 0xFFFF)
         self.pc = (self.pc + (op_off & 1)) & 0xFFFF
         return 8
@@ -753,21 +760,38 @@ class CPU:
         inc2 = 1 + (op_off & 1)
         r = (opcode >> 3) & 7
         v = self._imm8(op_off)
-        self._reg8_set(r, v)
+        if r == 6:
+            self._write8(self.regs.get_hl(), v, offset=8)
+        else:
+            self._reg8_set(r, v)
         self.pc = (self.pc + inc2) & 0xFFFF
         return 12 if r == 6 else 8
 
     def _op_inc_r(self, opcode: int, op_off: int) -> int:
         r = (opcode >> 3) & 7
+        if r == 6:
+            addr = self.regs.get_hl()
+            v = self._read8(addr, offset=4)
+            res = self._inc8(v)
+            self._write8(addr, res, offset=8)
+            self.pc = (self.pc + (op_off & 1)) & 0xFFFF
+            return 12
         self._reg8_set(r, self._inc8(self._reg8_get(r)))
         self.pc = (self.pc + (op_off & 1)) & 0xFFFF
-        return 12 if r == 6 else 4
+        return 4
 
     def _op_dec_r(self, opcode: int, op_off: int) -> int:
         r = (opcode >> 3) & 7
+        if r == 6:
+            addr = self.regs.get_hl()
+            v = self._read8(addr, offset=4)
+            res = self._dec8(v)
+            self._write8(addr, res, offset=8)
+            self.pc = (self.pc + (op_off & 1)) & 0xFFFF
+            return 12
         self._reg8_set(r, self._dec8(self._reg8_get(r)))
         self.pc = (self.pc + (op_off & 1)) & 0xFFFF
-        return 12 if r == 6 else 4
+        return 4
 
     def _op_jr(self, opcode: int, op_off: int) -> int:
         inc2 = 1 + (op_off & 1)
@@ -842,18 +866,18 @@ class CPU:
         a8 = self._imm8(op_off)
         addr = 0xFF00 + a8
         if opcode == 0xE0:
-            self._write8(addr, self.regs.a)
+            self._write8(addr, self.regs.a, offset=8)
         else:
-            self.regs.a = self._read8(addr)
+            self.regs.a = self._read8(addr, offset=8)
         self.pc = (self.pc + inc2) & 0xFFFF
         return 12
 
     def _op_ldh_c(self, opcode: int, op_off: int) -> int:
         addr = 0xFF00 + (self.regs.c & 0xFF)
         if opcode == 0xE2:
-            self._write8(addr, self.regs.a)
+            self._write8(addr, self.regs.a, offset=4)
         else:
-            self.regs.a = self._read8(addr)
+            self.regs.a = self._read8(addr, offset=4)
         self.pc = (self.pc + (op_off & 1)) & 0xFFFF
         return 8
 
@@ -861,9 +885,9 @@ class CPU:
         inc3 = 2 + (op_off & 1)
         addr = self._imm16(op_off)
         if opcode == 0xEA:
-            self._write8(addr, self.regs.a)
+            self._write8(addr, self.regs.a, offset=12)
         else:
-            self.regs.a = self._read8(addr)
+            self.regs.a = self._read8(addr, offset=12)
         self.pc = (self.pc + inc3) & 0xFFFF
         return 16
 
@@ -902,18 +926,18 @@ class CPU:
         return 4
 
     def _op_reti(self, opcode: int, op_off: int) -> int:
-        self.pc = self.pop_u16()
+        self.pc = self.pop_u16(offset_lo=4, offset_hi=8)
         self.ime = True
         return 16
 
     def _op_ret(self, opcode: int, op_off: int) -> int:
-        self.pc = self.pop_u16()
+        self.pc = self.pop_u16(offset_lo=4, offset_hi=8)
         return 16
 
     def _op_ret_cc(self, opcode: int, op_off: int) -> int:
         cc = (opcode >> 3) & 3
         if self._cond(cc):
-            self.pc = self.pop_u16()
+            self.pc = self.pop_u16(offset_lo=8, offset_hi=12)
             return 20
         self.pc = (self.pc + (op_off & 1)) & 0xFFFF
         return 8
@@ -936,7 +960,7 @@ class CPU:
     def _op_call_a16(self, opcode: int, op_off: int) -> int:
         inc3 = 2 + (op_off & 1)
         addr = self._imm16(op_off)
-        self.push_u16((self.pc + inc3) & 0xFFFF)
+        self.push_u16((self.pc + inc3) & 0xFFFF, offset_hi=16, offset_lo=20)
         self.pc = addr
         return 24
 
@@ -945,7 +969,7 @@ class CPU:
         cc = (opcode >> 3) & 3
         addr = self._imm16(op_off)
         if self._cond(cc):
-            self.push_u16((self.pc + inc3) & 0xFFFF)
+            self.push_u16((self.pc + inc3) & 0xFFFF, offset_hi=16, offset_lo=20)
             self.pc = addr
             return 24
         self.pc = (self.pc + inc3) & 0xFFFF
@@ -953,7 +977,7 @@ class CPU:
 
     def _op_pop_qq(self, opcode: int, op_off: int) -> int:
         qq = (opcode >> 4) & 3
-        v = self.pop_u16()
+        v = self.pop_u16(offset_lo=4, offset_hi=8)
         if qq == 0:
             self.regs.set_bc(v)
         elif qq == 1:
@@ -975,12 +999,12 @@ class CPU:
             v = self.regs.get_hl()
         else:
             v = self.regs.get_af()
-        self.push_u16(v)
+        self.push_u16(v, offset_hi=8, offset_lo=12)
         self.pc = (self.pc + (op_off & 1)) & 0xFFFF
         return 16
 
     def _op_rst(self, opcode: int, op_off: int) -> int:
         vec = opcode & 0x38
-        self.push_u16((self.pc + (op_off & 1)) & 0xFFFF)
+        self.push_u16((self.pc + (op_off & 1)) & 0xFFFF, offset_hi=8, offset_lo=12)
         self.pc = vec
         return 16

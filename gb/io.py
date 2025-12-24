@@ -43,6 +43,14 @@ class IO:
     _serial_cycle_acc: int = 0
     _serial_bits_left: int = 0
     _serial_latch_out: int = 0
+    _div_reset_pending_offset: int | None = None
+    _tac_pending_offset: int | None = None
+    _tac_pending_value: int = 0
+    _tac_pending_old: int = 0
+    _tima_pending_offset: int | None = None
+    _tima_pending_value: int = 0
+    _tma_pending_offset: int | None = None
+    _tma_pending_value: int = 0
 
     def __post_init__(self) -> None:
         if len(self.regs) != 0x80:
@@ -116,6 +124,14 @@ class IO:
         self._serial_out.clear()
 
         self._global_cycles = 0
+        self._div_reset_pending_offset = None
+        self._tac_pending_offset = None
+        self._tac_pending_value = 0
+        self._tac_pending_old = 0
+        self._tima_pending_offset = None
+        self._tima_pending_value = 0
+        self._tma_pending_offset = None
+        self._tma_pending_value = 0
 
     def _timer_bit(self, tac: int) -> int:
         sel = tac & 0x03
@@ -171,7 +187,7 @@ class IO:
         if (old_low & (~new_low)) & 0x0F:
             self.request_interrupt(JOYPAD_INTERRUPT_MASK)
 
-    def tick(self, cycles: int) -> None:
+    def _tick_basic(self, cycles: int) -> None:
         cycles = int(cycles)
         if cycles <= 0:
             return
@@ -250,6 +266,157 @@ class IO:
         regs[0x04] = (div_counter >> 8) & 0xFF
         self._global_cycles = gc_start + cycles
 
+    def _apply_div_reset(self) -> None:
+        tac = self.regs[0x07] & 0x07
+        old_input = self._timer_input(tac, self._div_counter)
+        self._div_counter = 0
+        self.regs[0x04] = 0
+        new_input = self._timer_input(tac, self._div_counter)
+        if old_input == 1 and new_input == 0:
+            self._tima_increment()
+
+    def _apply_tac_write(self) -> None:
+        old_tac = self._tac_pending_old & 0x07
+        new_tac = self._tac_pending_value & 0x07
+        div_counter = self._div_counter & 0xFFFF
+        old_input = self._timer_input(old_tac, div_counter)
+        new_input = self._timer_input(new_tac, div_counter)
+        if old_input == 1 and new_input == 0:
+            self._tima_increment()
+        self.regs[0x07] = new_tac
+
+    def _apply_tima_write(self) -> None:
+        value = self._tima_pending_value & 0xFF
+        if self._tima_reload_pending:
+            if self._global_cycles < self._tima_overflow_cancel_until:
+                self._tima_reload_pending = False
+                self._tima_reload_counter = 0
+                self.regs[0x05] = value
+            return
+        self.regs[0x05] = value
+
+    def _apply_tma_write(self) -> None:
+        self.regs[0x06] = self._tma_pending_value & 0xFF
+
+    def _next_pending_event(self) -> tuple[int, str] | None:
+        events: list[tuple[int, str]] = []
+        if self._div_reset_pending_offset is not None:
+            events.append((max(0, int(self._div_reset_pending_offset)), "div"))
+        if self._tac_pending_offset is not None:
+            events.append((max(0, int(self._tac_pending_offset)), "tac"))
+        if self._tima_pending_offset is not None:
+            events.append((max(0, int(self._tima_pending_offset)), "tima"))
+        if self._tma_pending_offset is not None:
+            events.append((max(0, int(self._tma_pending_offset)), "tma"))
+        if not events:
+            return None
+        return min(events, key=lambda item: item[0])
+
+    def _shift_pending_offsets(self, delta: int) -> None:
+        delta = int(delta)
+        if delta <= 0:
+            return
+        if self._div_reset_pending_offset is not None:
+            self._div_reset_pending_offset = int(self._div_reset_pending_offset) - delta
+        if self._tac_pending_offset is not None:
+            self._tac_pending_offset = int(self._tac_pending_offset) - delta
+        if self._tima_pending_offset is not None:
+            self._tima_pending_offset = int(self._tima_pending_offset) - delta
+        if self._tma_pending_offset is not None:
+            self._tma_pending_offset = int(self._tma_pending_offset) - delta
+
+    def tick(self, cycles: int) -> None:
+        cycles = int(cycles)
+        if cycles <= 0:
+            return
+
+        remaining = cycles
+        while remaining > 0:
+            next_event = self._next_pending_event()
+            if next_event is None:
+                self._tick_basic(remaining)
+                break
+
+            event_offset, event_kind = next_event
+            if event_offset > remaining:
+                self._tick_basic(remaining)
+                self._shift_pending_offsets(remaining)
+                break
+
+            if event_offset > 0:
+                self._tick_basic(event_offset)
+                remaining -= event_offset
+                self._shift_pending_offsets(event_offset)
+            if event_kind == "div":
+                self._apply_div_reset()
+                self._div_reset_pending_offset = None
+            elif event_kind == "tac":
+                self._apply_tac_write()
+                self._tac_pending_offset = None
+            elif event_kind == "tima":
+                self._apply_tima_write()
+                self._tima_pending_offset = None
+            else:
+                self._apply_tma_write()
+                self._tma_pending_offset = None
+            # continue loop for any remaining cycles/events
+
+    def _div_counter_at_offset(self, offset: int) -> int:
+        offset = int(offset)
+        if offset <= 0:
+            return self._div_counter & 0xFFFF
+        pending = self._div_reset_pending_offset
+        if pending is not None and offset >= int(pending):
+            pending = max(0, int(pending))
+            if offset >= pending:
+                return (offset - pending) & 0xFFFF
+        return (self._div_counter + offset) & 0xFFFF
+
+    def _peek_tima_at_offset(self, offset: int) -> int:
+        offset = int(offset)
+        if offset <= 0:
+            return self.regs[0x05] & 0xFF
+
+        div_counter = self._div_counter & 0xFFFF
+        tima = self.regs[0x05] & 0xFF
+        tma = self.regs[0x06] & 0xFF
+        tac = self.regs[0x07] & 0x07
+        reload_pending = bool(self._tima_reload_pending)
+        reload_counter = int(self._tima_reload_counter)
+
+        timer_enabled = (tac & 0x04) != 0
+        bit = self._timer_bit(tac) if timer_enabled else 0
+
+        for _ in range(offset):
+            old_input = 0
+            if timer_enabled and not reload_pending:
+                old_input = 1 if (div_counter & (1 << bit)) else 0
+
+            div_counter = (div_counter + 1) & 0xFFFF
+
+            if reload_pending:
+                reload_counter -= 1
+                if reload_counter <= 0:
+                    reload_pending = False
+                    reload_counter = 0
+                    tima = tma
+                continue
+
+            new_input = 0
+            if timer_enabled:
+                new_input = 1 if (div_counter & (1 << bit)) else 0
+
+            if old_input == 1 and new_input == 0:
+                if tima == 0xFF:
+                    tima = 0x00
+                    reload_pending = True
+                    reload_counter = 4
+                    reload_counter -= 1
+                else:
+                    tima = (tima + 1) & 0xFF
+
+        return tima & 0xFF
+
     def request_interrupt(self, mask: int) -> None:
         self.interrupt_flag = (self.interrupt_flag | (mask & 0x1F) | 0xE0) & 0xFF
 
@@ -283,7 +450,7 @@ class IO:
         self._serial_out.clear()
         return out
 
-    def read(self, address: int) -> int:
+    def read(self, address: int, offset: int = 0) -> int:
         address &= 0xFFFF
 
         if address == 0xFF0F:
@@ -303,9 +470,31 @@ class IO:
             if off == 0x02:
                 return 0x7E | (self.regs[0x02] & 0x81)
             if off == 0x04:
-                return (self._div_counter >> 8) & 0xFF
+                div_counter = self._div_counter_at_offset(offset)
+                return (div_counter >> 8) & 0xFF
             if off == 0x07:
-                return 0xF8 | (self.regs[0x07] & 0x07)
+                pending = self._tac_pending_offset
+                if pending is not None:
+                    pending = max(0, int(pending))
+                if pending is not None and int(offset) >= pending:
+                    tac_val = self._tac_pending_value & 0x07
+                else:
+                    tac_val = self.regs[0x07] & 0x07
+                return 0xF8 | tac_val
+            if off == 0x05:
+                pending = self._tima_pending_offset
+                if pending is not None:
+                    pending = max(0, int(pending))
+                if pending is not None and int(offset) >= pending:
+                    return self._tima_pending_value & 0xFF
+                return self._peek_tima_at_offset(offset)
+            if off == 0x06:
+                pending = self._tma_pending_offset
+                if pending is not None:
+                    pending = max(0, int(pending))
+                if pending is not None and int(offset) >= pending:
+                    return self._tma_pending_value & 0xFF
+                return self.regs[0x06] & 0xFF
 
             if off == 0x10:
                 return 0x80 | (self.regs[0x10] & 0x7F)
@@ -349,7 +538,7 @@ class IO:
 
         return 0xFF
 
-    def write(self, address: int, value: int) -> None:
+    def write(self, address: int, value: int, offset: int = 0) -> None:
         address &= 0xFFFF
         value &= 0xFF
 
@@ -390,32 +579,23 @@ class IO:
                 return
 
             if off == 0x04:
-                tac = self.regs[0x07] & 0x07
-                old_input = self._timer_input(tac, self._div_counter)
-                self._div_counter = 0
+                self._div_reset_pending_offset = int(offset)
                 self.regs[0x04] = 0
-                new_input = self._timer_input(tac, self._div_counter)
-                if old_input == 1 and new_input == 0:
-                    self._tima_increment()
                 return
 
             if off == 0x05:
-                if self._tima_reload_pending:
-                    if self._global_cycles < self._tima_overflow_cancel_until:
-                        self._tima_reload_pending = False
-                        self._tima_reload_counter = 0
-                        self.regs[0x05] = value
-                    return
-                self.regs[0x05] = value
+                self._tima_pending_value = value & 0xFF
+                self._tima_pending_offset = int(offset)
+                return
+            if off == 0x06:
+                self._tma_pending_value = value & 0xFF
+                self._tma_pending_offset = int(offset)
                 return
 
             if off == 0x07:
-                old_tac = self.regs[0x07] & 0x07
-                old_input = self._timer_input(old_tac, self._div_counter)
-                self.regs[0x07] = value & 0x07
-                new_input = self._timer_input(self.regs[0x07] & 0x07, self._div_counter)
-                if old_input == 1 and new_input == 0:
-                    self._tima_increment()
+                self._tac_pending_old = self.regs[0x07] & 0x07
+                self._tac_pending_value = value & 0x07
+                self._tac_pending_offset = int(offset)
                 return
 
             if off == 0x10:

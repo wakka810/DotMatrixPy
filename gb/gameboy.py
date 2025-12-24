@@ -72,6 +72,7 @@ class GameBoy:
 
 	def step(self) -> int:
 		cycles = self.cpu.step()
+		self.bus.advance_cycles(cycles)
 		self.bus.io.tick(cycles)
 		self.last_frame_ready = self.ppu.tick(cycles)
 		if self.last_frame_ready:

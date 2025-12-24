@@ -444,7 +444,8 @@ class PPU:
     def peek_stat(self, offset: int = 0) -> int:
         select = self._stat_select_at_offset(offset)
         if not self._enabled:
-            return 0x80 | (select & 0x78)
+            coin = 0x04 if self._coin else 0x00
+            return 0x80 | (select & 0x78) | coin
         mode = self._mode_at_offset(offset) & 0x03
         coin = 0x04 if self._coin else 0x00
         return 0x80 | (select & 0x78) | coin | mode
@@ -494,9 +495,7 @@ class PPU:
         self._post_enable_delay_lines_remaining = 0
         self._pending_coincidence_dot = -1
         self._mode3_len = 172
-        self._coin = False
         self._coin_zero_delay = False
-        self._stat_irq_line = False
         self._spurious_select_override_dots = 0
         self._blank_frame = False
         self._window_line = 0
@@ -518,7 +517,6 @@ class PPU:
         self._window_line = 0
         self._lyc = io.regs[0x45] & 0xFF
         self._stat_select = io.regs[0x41] & 0x78
-        self._stat_irq_line = False
         self._spurious_select_override_dots = 0
         self._blank_frame = True
         self.framebuffer[:] = bytes([0]) * (SCREEN_W * SCREEN_H)
@@ -698,7 +696,6 @@ class PPU:
 
     def _update_coincidence(self, immediate: bool) -> None:
         if not self._enabled:
-            self._coin = False
             self._write_stat_disabled()
             self._update_stat_irq()
             return
@@ -716,14 +713,16 @@ class PPU:
     def _write_stat_disabled(self) -> None:
         io = self.bus.io
         select = io.regs[0x41] & 0x78
-        io.regs[0x41] = 0x80 | select
+        coin = 0x04 if self._coin else 0x00
+        io.regs[0x41] = 0x80 | select | coin
 
     def _write_stat(self) -> None:
         io = self.bus.io
         select = io.regs[0x41] & 0x78
         self._stat_select = select
         if not self._enabled:
-            io.regs[0x41] = 0x80 | select
+            coin = 0x04 if self._coin else 0x00
+            io.regs[0x41] = 0x80 | select | coin
             return
         mode = self._mode & 0x03
         coin = 0x04 if self._coin else 0x00
@@ -731,7 +730,6 @@ class PPU:
 
     def _update_stat_irq(self) -> None:
         if not self._enabled:
-            self._stat_irq_line = False
             return
 
         select = self._effective_stat_select()

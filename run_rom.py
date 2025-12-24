@@ -6,6 +6,156 @@ import time
 from pathlib import Path
 
 
+_MOONEYE_PASS = bytes([3, 5, 8, 13, 21, 34])
+_MOONEYE_FAIL = bytes([0x42] * 6)
+
+
+def _tail_append(buf: str, add: str, keep: int) -> str:
+	if not add:
+		return buf
+	buf = buf + add
+	if len(buf) > keep:
+		buf = buf[-keep:]
+	return buf
+
+
+def _detect_mooneye_pass_fail(serial: str) -> str | None:
+	try:
+		b = bytes((ord(ch) & 0xFF) for ch in serial)
+		if _MOONEYE_FAIL in b:
+			return "FAIL"
+		if _MOONEYE_PASS in b:
+			return "PASS"
+	except Exception:
+		pass
+	return None
+
+
+def _hex8(v: int) -> str:
+	return f"0x{(int(v) & 0xFF):02X}"
+
+
+def _hex16(v: int) -> str:
+	return f"0x{(int(v) & 0xFFFF):04X}"
+
+
+def _read_mem(bus, addr: int, n: int) -> list[int]:
+	addr &= 0xFFFF
+	return [bus.read_byte((addr + i) & 0xFFFF) & 0xFF for i in range(max(0, int(n)))]
+
+
+def _dump_trace(trace: list[tuple[int, int, int, int]]) -> None:
+	# (pc, op, sp, f)
+	if not trace:
+		return
+	print("\n-- last instructions (pc op sp f) --")
+	for pc, op, sp, f in trace[-len(trace):]:
+		print(f"  {pc:04X}  {op:02X}  SP={sp:04X}  F={f:02X}")
+
+
+def _dump_vblank_stat_intr_gs(gb, *, trace: list[tuple[int, int, int, int]]) -> None:
+	cpu = gb.cpu
+	regs = cpu.regs
+	bus = gb.bus
+	io = bus.io
+	op = bus.read_byte(cpu.pc)
+
+	print("\n=== vblank_stat_intr-GS.gb debug dump (temporary) ===")
+	print(
+		"CPU:",
+		f"PC={_hex16(cpu.pc)} OP={_hex8(op)} SP={_hex16(cpu.sp)} IME={int(bool(cpu.ime))}",
+		f"HALT={int(bool(cpu.halted))} STOP={int(bool(cpu.stopped))}",
+	)
+	print(
+		"REG:",
+		f"A={_hex8(regs.a)} F={_hex8(regs.f)} B={_hex8(regs.b)} C={_hex8(regs.c)}",
+		f"D={_hex8(regs.d)} E={_hex8(regs.e)} H={_hex8(regs.h)} L={_hex8(regs.l)}",
+	)
+	print(
+		"IO:",
+		f"FF40(LCDC)={_hex8(io.regs[0x40])}",
+		f"FF41(STAT)={_hex8(bus.read_byte(0xFF41))}",
+		f"FF44(LY)={_hex8(io.regs[0x44])}",
+		f"FF45(LYC)={_hex8(io.regs[0x45])}",
+		f"FF04(DIV)={_hex8(bus.read_byte(0xFF04))}",
+		f"IF={_hex8(io.interrupt_flag)} IE={_hex8(io.interrupt_enable)}",
+	)
+
+	sp = cpu.sp & 0xFFFF
+	stack16 = _read_mem(bus, sp, 16)
+	print("STACK[SP..SP+15]:", " ".join(f"{b:02X}" for b in stack16))
+
+	# vblank_stat_intr-GS.s の test_finish での期待値（quit_check_asserts 直前）
+	print("Expected (from vblank_stat_intr-GS.s assertions): B=0x01 C=0x00 D=0x01 E=0x00")
+	_dump_trace(trace)
+
+
+def _run_headless_with_results(
+	rom: Path,
+	*,
+	max_cycles: int = 80_000_000,
+	timeout_s: float = 20.0,
+	serial_tail: int = 4096,
+	trace_last: int = 0,
+	dump_vblank_stat_intr_gs: bool = False,
+) -> int:
+	from gb.gameboy import GameBoy
+
+	gb = GameBoy.from_rom(rom)
+	start = time.monotonic()
+	cycles = 0
+	serial = ""
+
+	pass_regs = (3, 5, 8, 13, 21, 34)
+	fail_regs = (0x42, 0x42, 0x42, 0x42, 0x42, 0x42)
+	trace: list[tuple[int, int, int, int]] = []
+
+	status: str | None = None
+	while True:
+		if timeout_s > 0 and (time.monotonic() - start) >= timeout_s:
+			status = "TIMEOUT"
+			break
+		if max_cycles > 0 and cycles >= max_cycles:
+			status = "TIMEOUT"
+			break
+
+		op = gb.bus.read_byte(gb.cpu.pc)
+		if trace_last > 0:
+			trace.append((gb.cpu.pc & 0xFFFF, op & 0xFF, gb.cpu.sp & 0xFFFF, gb.cpu.regs.f & 0xFF))
+			if len(trace) > trace_last:
+				del trace[: len(trace) - trace_last]
+		if op == 0x40:  # HALT
+			r = gb.cpu.regs
+			sig = (r.b & 0xFF, r.c & 0xFF, r.d & 0xFF, r.e & 0xFF, r.h & 0xFF, r.l & 0xFF)
+			if sig == pass_regs:
+				status = "PASS"
+				break
+			if sig == fail_regs:
+				status = "FAIL"
+				break
+
+		c = gb.step()
+		cycles += int(c)
+
+		out = gb.bus.io.consume_serial_output()
+		if out:
+			print(out, end="", flush=True)
+			serial = _tail_append(serial, out, serial_tail)
+			serial_status = _detect_mooneye_pass_fail(serial)
+			if serial_status is not None:
+				status = serial_status
+				break
+
+	if status is None:
+		status = "ERROR"
+
+	print(f"\n=== Result: {status}  cycles={cycles}  elapsed={time.monotonic() - start:.2f}s ===")
+	if dump_vblank_stat_intr_gs:
+		_dump_vblank_stat_intr_gs(gb, trace=trace)
+
+	return 0 if status == "PASS" else 1
+
+
 def main() -> int:
 	parser = argparse.ArgumentParser(description="Run a Game Boy ROM (minimal emulator)")
 	parser.add_argument("rom", type=Path, help="Path to .gb/.gbc ROM")
@@ -25,9 +175,17 @@ def main() -> int:
 	gb = GameBoy.from_rom(args.rom)
 
 	if args.headless:
+		rom_name = args.rom.name.lower()
+		is_vblank_stat_intr_gs = rom_name == "vblank_stat_intr-gs.gb"
+		if args.print_results or is_vblank_stat_intr_gs:
+			return _run_headless_with_results(
+				args.rom,
+				trace_last=64 if is_vblank_stat_intr_gs else 0,
+				dump_vblank_stat_intr_gs=is_vblank_stat_intr_gs,
+			)
+
 		for _ in range(120):
 			gb.run_until_frame()
-
 		return 0
 
 	try:
