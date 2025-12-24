@@ -208,6 +208,193 @@ def _dump_boot_hwio_dmgabcmgb(gb, *, trace: list[tuple[int, int, int, int]]) -> 
 	_dump_trace(trace)
 
 
+def _dump_boot_div_dmgabcmgb(gb, *, trace: list[tuple[int, int, int, int]]) -> None:
+	cpu = gb.cpu
+	regs = cpu.regs
+	bus = gb.bus
+	io = bus.io
+	op = bus.read_byte(cpu.pc)
+
+	div = bus.read_byte(0xFF04) & 0xFF
+	tima = bus.read_byte(0xFF05) & 0xFF
+	tma = bus.read_byte(0xFF06) & 0xFF
+	tac = bus.read_byte(0xFF07) & 0xFF
+
+	print("\n=== boot_div-dmgABCmgb.gb debug dump ===")
+	print(
+		"CPU:",
+		f"PC={_hex16(cpu.pc)} OP={_hex8(op)} SP={_hex16(cpu.sp)} IME={int(bool(cpu.ime))}",
+		f"HALT={int(bool(cpu.halted))} STOP={int(bool(cpu.stopped))}",
+	)
+	print(
+		"REG:",
+		f"A={_hex8(regs.a)} F={_hex8(regs.f)} B={_hex8(regs.b)} C={_hex8(regs.c)}",
+		f"D={_hex8(regs.d)} E={_hex8(regs.e)} H={_hex8(regs.h)} L={_hex8(regs.l)}",
+	)
+	print("INT:", f"IF={_hex8(bus.read_byte(0xFF0F))} IE={_hex8(bus.read_byte(0xFFFF))}")
+	print("TMR:", f"DIV={_hex8(div)} TIMA={_hex8(tima)} TMA={_hex8(tma)} TAC={_hex8(tac)}")
+
+	div_counter = int(getattr(io, "_div_counter", -1)) & 0xFFFF
+	gc = int(getattr(io, "_global_cycles", -1))
+	div_reset_off = getattr(io, "_div_reset_pending_offset", None)
+
+	tac_val = io.regs[0x07] & 0x07
+	timer_enabled = (tac_val & 0x04) != 0
+	timer_bit = io._timer_bit(tac_val) if timer_enabled else -1
+	input_state = io._timer_input(tac_val, div_counter) if timer_enabled else 0
+
+	print(
+		"DIV:",
+		f"div_counter={div_counter} (hi={_hex8((div_counter >> 8) & 0xFF)})",
+		f"div_reset_pending_offset={div_reset_off}",
+		f"global_cycles={gc}",
+	)
+	print(
+		"TMR_INT:",
+		f"timer_enabled={int(timer_enabled)} bit={timer_bit} input={input_state}",
+		f"reload_pending={int(bool(getattr(io, '_tima_reload_pending', False)))}",
+		f"reload_counter={int(getattr(io, '_tima_reload_counter', -1))}",
+	)
+
+	# Sample the DIV register as seen by the CPU for a few cycle offsets.
+	div_peek = [bus.read_byte(0xFF04, cpu_offset=i) & 0xFF for i in range(0, 9)]
+	print("DIV_PEEK:", " ".join(f"+{i}:{b:02X}" for i, b in enumerate(div_peek)))
+	# Sample predicted TIMA evolution too (handy when DIV reset edge cases cascade into TIMA).
+	pred_tima = [io._peek_tima_at_offset(i) & 0xFF for i in range(0, 9)]
+	print("TIMA_PEEK:", " ".join(f"+{i}:{b:02X}" for i, b in enumerate(pred_tima)))
+
+	sp = cpu.sp & 0xFFFF
+	stack16 = _read_mem(bus, sp, 16)
+	print("STACK[SP..SP+15]:", " ".join(f"{b:02X}" for b in stack16))
+	_dump_trace(trace)
+
+
+def _dump_boot_sclk_align_dmgabcmgb(gb, *, trace: list[tuple[int, int, int, int]]) -> None:
+	cpu = gb.cpu
+	regs = cpu.regs
+	bus = gb.bus
+	io = bus.io
+	op = bus.read_byte(cpu.pc)
+
+	sb = bus.read_byte(0xFF01) & 0xFF
+	sc = bus.read_byte(0xFF02) & 0xFF
+
+	print("\n=== boot_sclk_align-dmgABCmgb.gb debug dump ===")
+	print(
+		"CPU:",
+		f"PC={_hex16(cpu.pc)} OP={_hex8(op)} SP={_hex16(cpu.sp)} IME={int(bool(cpu.ime))}",
+		f"HALT={int(bool(cpu.halted))} STOP={int(bool(cpu.stopped))}",
+	)
+	print(
+		"REG:",
+		f"A={_hex8(regs.a)} F={_hex8(regs.f)} B={_hex8(regs.b)} C={_hex8(regs.c)}",
+		f"D={_hex8(regs.d)} E={_hex8(regs.e)} H={_hex8(regs.h)} L={_hex8(regs.l)}",
+	)
+	print("INT:", f"IF={_hex8(bus.read_byte(0xFF0F))} IE={_hex8(bus.read_byte(0xFFFF))}")
+	print("SER:", f"SB(FF01)={_hex8(sb)} SC(FF02)={_hex8(sc)}")
+
+	# Internal serial engine state.
+	print(
+		"SER_INT:",
+		f"active={int(bool(getattr(io, '_serial_active', False)))}",
+		f"internal_clock={int(bool(getattr(io, '_serial_internal_clock', False)))}",
+		f"cycle_acc={int(getattr(io, '_serial_cycle_acc', -1))}",
+		f"bits_left={int(getattr(io, '_serial_bits_left', -1))}",
+		f"latch_out={_hex8(int(getattr(io, '_serial_latch_out', 0)))}",
+	)
+	print(
+		"TIME:",
+		f"bus_cycle_counter={int(getattr(bus, '_cycle_counter', -1))}",
+		f"io_global_cycles={int(getattr(io, '_global_cycles', -1))}",
+	)
+
+	# Peek what the CPU would read for the next few cycles.
+	sb_peek = [bus.read_byte(0xFF01, cpu_offset=i) & 0xFF for i in range(0, 9)]
+	sc_peek = [bus.read_byte(0xFF02, cpu_offset=i) & 0xFF for i in range(0, 9)]
+	print("SB_PEEK:", " ".join(f"+{i}:{b:02X}" for i, b in enumerate(sb_peek)))
+	print("SC_PEEK:", " ".join(f"+{i}:{b:02X}" for i, b in enumerate(sc_peek)))
+
+	# Show any buffered serial output.
+	out = gb.bus.io.consume_serial_output()
+	print("SER_OUT:", repr(out))
+
+	sp = cpu.sp & 0xFFFF
+	stack16 = _read_mem(bus, sp, 16)
+	print("STACK[SP..SP+15]:", " ".join(f"{b:02X}" for b in stack16))
+	_dump_trace(trace)
+
+
+def _dump_intr_2_0_timing(gb, *, trace: list[tuple[int, int, int, int]]) -> None:
+	cpu = gb.cpu
+	regs = cpu.regs
+	bus = gb.bus
+	io = bus.io
+	ppu = gb.ppu
+	op = bus.read_byte(cpu.pc)
+
+	print("\n=== intr_2_0_timing.gb debug dump ===")
+	print(
+		"CPU:",
+		f"PC={_hex16(cpu.pc)} OP={_hex8(op)} SP={_hex16(cpu.sp)} IME={int(bool(cpu.ime))}",
+		f"HALT={int(bool(cpu.halted))} STOP={int(bool(cpu.stopped))}",
+	)
+	print(
+		"REG:",
+		f"A={_hex8(regs.a)} F={_hex8(regs.f)} B={_hex8(regs.b)} C={_hex8(regs.c)}",
+		f"D={_hex8(regs.d)} E={_hex8(regs.e)} H={_hex8(regs.h)} L={_hex8(regs.l)}",
+	)
+
+	lcdc = bus.read_byte(0xFF40) & 0xFF
+	stat = bus.read_byte(0xFF41) & 0xFF
+	scy = bus.read_byte(0xFF42) & 0xFF
+	scx = bus.read_byte(0xFF43) & 0xFF
+	ly = bus.read_byte(0xFF44) & 0xFF
+	lyc = bus.read_byte(0xFF45) & 0xFF
+	iflag = bus.read_byte(0xFF0F) & 0xFF
+	ie = bus.read_byte(0xFFFF) & 0xFF
+	div = bus.read_byte(0xFF04) & 0xFF
+
+	print(
+		"IO:",
+		f"FF40(LCDC)={_hex8(lcdc)} FF41(STAT)={_hex8(stat)} FF44(LY)={_hex8(ly)} FF45(LYC)={_hex8(lyc)}",
+		f"FF42(SCY)={_hex8(scy)} FF43(SCX)={_hex8(scx)} FF04(DIV)={_hex8(div)}",
+		f"IF={_hex8(iflag)} IE={_hex8(ie)}",
+	)
+
+	print(
+		"PPU:",
+		f"enabled={int(bool(getattr(ppu, '_enabled', False)))}",
+		f"mode={int(getattr(ppu, '_mode', -1))} line={int(getattr(ppu, '_line', -1))} dot={int(getattr(ppu, '_dot', -1))}",
+		f"mode3_len={int(getattr(ppu, '_mode3_len', -1))}",
+	)
+	print(
+		"PPU2:",
+		f"line_mode2_delay={int(getattr(ppu, '_line_mode2_delay', -1))}",
+		f"post_enable_delay_lines={int(getattr(ppu, '_post_enable_delay_lines_remaining', -1))}",
+		f"pending_mode0_dot={int(getattr(ppu, '_pending_stat_mode0_dot', -1))}",
+		f"pending_coin_dot={int(getattr(ppu, '_pending_coincidence_dot', -1))}",
+		f"stat_select={_hex8(int(getattr(ppu, '_stat_select', 0)))}",
+		f"stat_irq_line={int(bool(getattr(ppu, '_stat_irq_line', False)))}",
+		f"spurious_override_dots={int(getattr(ppu, '_spurious_select_override_dots', -1))}",
+	)
+	print(
+		"BUS:",
+		f"cycle_counter={int(getattr(bus, '_cycle_counter', -1))}",
+		f"io_global_cycles={int(getattr(io, '_global_cycles', -1))}",
+	)
+
+	# Peek STAT/LY as observed by CPU in the next few cycles.
+	stat_peek = [bus.read_byte(0xFF41, cpu_offset=i) & 0xFF for i in range(0, 9)]
+	ly_peek = [bus.read_byte(0xFF44, cpu_offset=i) & 0xFF for i in range(0, 9)]
+	print("STAT_PEEK:", " ".join(f"+{i}:{b:02X}" for i, b in enumerate(stat_peek)))
+	print("LY_PEEK:", " ".join(f"+{i}:{b:02X}" for i, b in enumerate(ly_peek)))
+
+	sp = cpu.sp & 0xFFFF
+	stack16 = _read_mem(bus, sp, 16)
+	print("STACK[SP..SP+15]:", " ".join(f"{b:02X}" for b in stack16))
+	_dump_trace(trace)
+
+
 def _run_headless_with_results(
 	rom: Path,
 	*,
@@ -217,6 +404,9 @@ def _run_headless_with_results(
 	trace_last: int = 0,
 	dump_tma_write_reloading: bool = False,
 	dump_boot_hwio_dmgabcmgb: bool = False,
+	dump_boot_div_dmgabcmgb: bool = False,
+	dump_boot_sclk_align_dmgabcmgb: bool = False,
+	dump_intr_2_0_timing: bool = False,
 ) -> int:
 	from gb.gameboy import GameBoy
 
@@ -273,6 +463,12 @@ def _run_headless_with_results(
 		_dump_tma_write_reloading(gb, trace=trace)
 	if dump_boot_hwio_dmgabcmgb:
 		_dump_boot_hwio_dmgabcmgb(gb, trace=trace)
+	if dump_boot_div_dmgabcmgb:
+		_dump_boot_div_dmgabcmgb(gb, trace=trace)
+	if dump_boot_sclk_align_dmgabcmgb:
+		_dump_boot_sclk_align_dmgabcmgb(gb, trace=trace)
+	if dump_intr_2_0_timing:
+		_dump_intr_2_0_timing(gb, trace=trace)
 
 	return 0 if status == "PASS" else 1
 
@@ -299,12 +495,33 @@ def main() -> int:
 		rom_name = args.rom.name.lower()
 		is_tma_write_reloading = rom_name == "tma_write_reloading.gb"
 		is_boot_hwio_dmgabcmgb = rom_name == "boot_hwio-dmgabcmgb.gb"
-		if args.print_results or is_tma_write_reloading or is_boot_hwio_dmgabcmgb:
+		is_boot_div_dmgabcmgb = rom_name == "boot_div-dmgabcmgb.gb"
+		is_boot_sclk_align_dmgabcmgb = rom_name == "boot_sclk_align-dmgabcmgb.gb"
+		is_intr_2_0_timing = rom_name == "intr_2_0_timing.gb"
+		if (
+			args.print_results
+			or is_tma_write_reloading
+			or is_boot_hwio_dmgabcmgb
+			or is_boot_div_dmgabcmgb
+			or is_boot_sclk_align_dmgabcmgb
+			or is_intr_2_0_timing
+		):
 			return _run_headless_with_results(
 				args.rom,
-				trace_last=256 if (is_tma_write_reloading or is_boot_hwio_dmgabcmgb) else 0,
+				trace_last=256
+				if (
+					is_tma_write_reloading
+					or is_boot_hwio_dmgabcmgb
+					or is_boot_div_dmgabcmgb
+					or is_boot_sclk_align_dmgabcmgb
+					or is_intr_2_0_timing
+				)
+				else 0,
 				dump_tma_write_reloading=is_tma_write_reloading,
 				dump_boot_hwio_dmgabcmgb=is_boot_hwio_dmgabcmgb,
+				dump_boot_div_dmgabcmgb=is_boot_div_dmgabcmgb,
+				dump_boot_sclk_align_dmgabcmgb=is_boot_sclk_align_dmgabcmgb,
+				dump_intr_2_0_timing=is_intr_2_0_timing,
 			)
 
 		for _ in range(120):

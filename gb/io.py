@@ -43,6 +43,8 @@ class IO:
     _serial_cycle_acc: int = 0
     _serial_bits_left: int = 0
     _serial_latch_out: int = 0
+    _sc_pending_offset: int | None = None
+    _sc_pending_value: int = 0
     _div_reset_pending_offset: int | None = None
     _tac_pending_offset: int | None = None
     _tac_pending_value: int = 0
@@ -70,7 +72,9 @@ class IO:
         self.interrupt_flag = 0xE1
         self.interrupt_enable = 0x00
 
-        self._div_counter = 0xAC34
+        # DMG ABC/MGB post-boot divider phase: DIV is 0xAB at t=0, and the
+        # next increment occurs 52 cycles later (used by mooneye boot_div).
+        self._div_counter = 0xABCC
         self.regs[0x04] = (self._div_counter >> 8) & 0xFF
 
         self.regs[0x10] = 0x80
@@ -122,6 +126,8 @@ class IO:
         self._serial_bits_left = 0
         self._serial_latch_out = 0
         self._serial_out.clear()
+        self._sc_pending_offset = None
+        self._sc_pending_value = 0
 
         self._global_cycles = 0
         self._div_reset_pending_offset = None
@@ -283,6 +289,24 @@ class IO:
         if old_input == 1 and new_input == 0:
             self._tima_increment()
 
+    def _apply_sc_write(self) -> None:
+        value = self._sc_pending_value & 0xFF
+        if (value & 0x80) == 0:
+            self._serial_active = False
+            self._serial_cycle_acc = 0
+            self._serial_bits_left = 0
+            self._serial_internal_clock = (value & 0x01) != 0
+            self.regs[0x02] = value & 0x01
+            return
+        self.regs[0x02] = value & 0x81
+        self._serial_internal_clock = (value & 0x01) != 0
+        self._serial_active = True
+        # Align the serial clock to the free-running divider (bit 8 falling edge).
+        # Use the divider counter phase so edges stay aligned to the reset state.
+        self._serial_cycle_acc = int(self._div_counter) & 0x1FF
+        self._serial_bits_left = 8
+        self._serial_latch_out = self.regs[0x01] & 0xFF
+
     def _apply_tac_write(self) -> None:
         old_tac = self._tac_pending_old & 0x07
         new_tac = self._tac_pending_value & 0x07
@@ -308,6 +332,8 @@ class IO:
 
     def _next_pending_event(self) -> tuple[int, str] | None:
         events: list[tuple[int, str]] = []
+        if self._sc_pending_offset is not None:
+            events.append((max(0, int(self._sc_pending_offset)), "sc"))
         if self._div_reset_pending_offset is not None:
             events.append((max(0, int(self._div_reset_pending_offset)), "div"))
         if self._tac_pending_offset is not None:
@@ -324,6 +350,8 @@ class IO:
         delta = int(delta)
         if delta <= 0:
             return
+        if self._sc_pending_offset is not None:
+            self._sc_pending_offset = int(self._sc_pending_offset) - delta
         if self._div_reset_pending_offset is not None:
             self._div_reset_pending_offset = int(self._div_reset_pending_offset) - delta
         if self._tac_pending_offset is not None:
@@ -355,7 +383,10 @@ class IO:
                 self._tick_basic(event_offset, defer_reload_at=event_offset)
                 remaining -= event_offset
                 self._shift_pending_offsets(event_offset)
-            if event_kind == "div":
+            if event_kind == "sc":
+                self._apply_sc_write()
+                self._sc_pending_offset = None
+            elif event_kind == "div":
                 self._apply_div_reset()
                 self._div_reset_pending_offset = None
             elif event_kind == "tac":
@@ -476,7 +507,14 @@ class IO:
                 return 0xC0 | sel | self._joyp_low(sel)
 
             if off == 0x02:
-                return 0x7E | (self.regs[0x02] & 0x81)
+                pending = self._sc_pending_offset
+                if pending is not None:
+                    pending = max(0, int(pending))
+                if pending is not None and int(offset) >= pending:
+                    sc_val = self._sc_pending_value & 0x81
+                else:
+                    sc_val = self.regs[0x02] & 0x81
+                return 0x7E | sc_val
             if off == 0x04:
                 div_counter = self._div_counter_at_offset(offset)
                 return (div_counter >> 8) & 0xFF
@@ -572,18 +610,8 @@ class IO:
                 return
 
             if off == 0x02:
-                if (value & 0x80) == 0:
-                    self._serial_active = False
-                    self._serial_cycle_acc = 0
-                    self._serial_bits_left = 0
-                    self.regs[0x02] = value & 0x01
-                    return
-                self.regs[0x02] = value & 0x81
-                self._serial_internal_clock = (value & 0x01) != 0
-                self._serial_active = True
-                self._serial_cycle_acc = 0
-                self._serial_bits_left = 8
-                self._serial_latch_out = self.regs[0x01] & 0xFF
+                self._sc_pending_value = value & 0xFF
+                self._sc_pending_offset = int(offset)
                 return
 
             if off == 0x04:
