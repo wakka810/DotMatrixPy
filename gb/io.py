@@ -454,9 +454,9 @@ class IO:
         address &= 0xFFFF
 
         if address == 0xFF0F:
-            return self.interrupt_flag & 0xFF
+            return (self.interrupt_flag | 0xE0) & 0xFF
         if address == 0xFFFF:
-            return self.interrupt_enable & 0x1F
+            return self.interrupt_enable & 0xFF
 
         if 0xFF00 <= address <= 0xFF7F:
             off = address - 0xFF00
@@ -546,7 +546,7 @@ class IO:
             self.interrupt_flag = (value | 0xE0) & 0xFF
             return
         if address == 0xFFFF:
-            self.interrupt_enable = value & 0x1F
+            self.interrupt_enable = value & 0xFF
             return
 
         if 0xFF00 <= address <= 0xFF7F:

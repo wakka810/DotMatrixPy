@@ -30,4 +30,4 @@ python tests/run_mooneye.py
 
 ### Mooneye results
 
-PASS: 67  FAIL: 44  TIMEOUT: 0  ERROR: 0
+PASS: 86  FAIL: 6  TIMEOUT: 0  ERROR: 0
