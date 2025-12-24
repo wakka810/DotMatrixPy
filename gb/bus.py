@@ -157,6 +157,8 @@ class BUS:
 
         if address == 0xFF41 and self.ppu is not None:
             return self.ppu.peek_stat(cpu_offset)
+        if address == 0xFF44 and self.ppu is not None:
+            return self.ppu.peek_ly(cpu_offset)
 
         if (0xFF00 <= address <= 0xFF7F) or address in (0xFF0F, 0xFFFF):
             return self.io.read(address, offset=cpu_offset)

@@ -165,6 +165,7 @@ class PPU:
     _line_mode2_delay: int = 0
     _post_enable_delay_lines_remaining: int = 0
     _pending_coincidence_dot: int = -1
+    _pending_stat_mode0_dot: int = -1
 
     _line_sprites: List[Sprite] = field(default_factory=list)
 
@@ -438,6 +439,26 @@ class PPU:
 
         return not (start <= dot2 < end)
 
+    def _ly_at_offset(self, offset: int) -> int:
+        if not self._enabled:
+            return 0
+        offset = int(offset)
+        if offset <= 0:
+            if self._line == 153 and self._dot >= 4:
+                return 0
+            return self._line & 0xFF
+
+        dot = self._dot + offset
+        line = self._line
+        if dot >= DOTS_PER_LINE:
+            lines_advanced = dot // DOTS_PER_LINE
+            dot %= DOTS_PER_LINE
+            line = (line + lines_advanced) % VBLANK_END_LINE
+
+        if line == 153 and dot >= 4:
+            return 0
+        return line & 0xFF
+
     def peek_oam_accessible(self, offset: int = 0) -> bool:
         return self._oam_accessible_at_offset(offset)
 
@@ -449,6 +470,9 @@ class PPU:
         mode = self._mode_at_offset(offset) & 0x03
         coin = 0x04 if self._coin else 0x00
         return 0x80 | (select & 0x78) | coin | mode
+
+    def peek_ly(self, offset: int = 0) -> int:
+        return self._ly_at_offset(offset) & 0xFF
 
     def render_frame_rgb(self, out_rgb: bytearray) -> None:
         if len(out_rgb) < SCREEN_W * SCREEN_H * 3:
@@ -740,6 +764,14 @@ class PPU:
             line = True
         elif (select & 0x20) and self._mode == 2:
             line = True
+        elif (
+            (select & 0x20)
+            and self._mode == 1
+            and self._line == VBLANK_START_LINE
+            and self._dot == 0
+        ):
+            # DMG quirk: mode 2 STAT interrupt also triggers on line 144 at VBlank start.
+            line = True
         elif (select & 0x40) and self._coin:
             line = True
 
@@ -805,7 +837,10 @@ class PPU:
                 length = 168 + (extra * 4)
                 used_sprite_override = True
         if (not used_sprite_override) and bg_on:
-            length += scx & 7
+            scx_mod = scx & 7
+            # DMG timing: SCX penalty rounds to 4-dot steps (affects HBlank/LY timing).
+            if scx_mod:
+                length += ((scx_mod + 3) // 4) * 4
             if win_on and (0 < win_x < 160):
                 length += 6
 
