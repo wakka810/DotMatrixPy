@@ -8,9 +8,6 @@ A Game Boy (DMG) emulator written in Python with audio support! 🎮
 
 December 2025
 
-
-
-
 ## Overview
 
 DotMatrixPy is a Game Boy (DMG-01) emulator implemented in pure Python. It targets the Sharp SM83 CPU architecture. It provides cycle-accurate timing emulation. The project runs on the PyPy JIT compiler to achieve real-time execution speeds. The codebase mirrors the internal architecture of the hardware. The CPU, PPU, APU, and Bus are separated into distinct classes.
@@ -34,14 +31,47 @@ The core logic emulates the SM83 instruction set at the machine-cycle level. The
 
 ## Screenshots
 
-<!--
-![Screenshot 1](screenshots/screenshot1.png)
-*TODO: Add screenshot*
+> Screenshots taken during emulator testing. All game assets and trademarks belong to their respective owners.
 
-![Screenshot 2](screenshots/screenshot2.png)
-*TODO: Add screenshot*
--->
-*Screenshots coming soon*
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://tangramgames.itch.io/tobu-tobu-girl-deluxe">
+        <img src="https://github.com/user-attachments/assets/1ef81d81-bf4a-41e3-a67b-86830d4b8cf7" width="420" alt="Tobu Tobu Girl Deluxe - emulator test screenshot" />
+      </a><br />
+      <b><a href="https://tangramgames.itch.io/tobu-tobu-girl-deluxe">Tobu Tobu Girl Deluxe</a></b>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://izma.itch.io/deadeus">
+        <img src="https://github.com/user-attachments/assets/1827a97e-bdd3-4c49-b75c-ef93059bd4d4" width="420" alt="Deadeus - emulator test screenshot" />
+      </a><br />
+      <b><a href="https://izma.itch.io/deadeus">Deadeus</a></b>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://snorpung.itch.io/dangan-gb">
+        <img src="https://github.com/user-attachments/assets/8d698684-9944-45b6-93e7-4d660b0711d8" width="420" alt="Dangan GB - emulator test screenshot" />
+      </a><br />
+      <b><a href="https://snorpung.itch.io/dangan-gb">Dangan GB</a></b>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/mattcurrie/dmg-acid2">
+        <img src="https://github.com/user-attachments/assets/d8c53d0c-b953-4367-a258-6f874ed56188" width="420" alt="dmg-acid2 - emulator test screenshot" />
+      </a><br />
+      <b><a href="https://github.com/mattcurrie/dmg-acid2">dmg-acid2</a></b>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://binji.itch.io/porklikegb">
+        <img src="https://github.com/user-attachments/assets/af438ebf-d1d9-4690-bbaf-3e6f75b15d0d" width="420" alt="Porklike - emulator test screenshot" />
+      </a><br />
+      <b><a href="https://binji.itch.io/porklikegb">Porklike</a></b>
+    </td>
+    <td width="33%"></td>
+  </tr>
+</table>
+
+
 
 ## Requirements
 
