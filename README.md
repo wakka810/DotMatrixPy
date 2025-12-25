@@ -140,10 +140,10 @@ python run_rom.py path/to/rom.gb
 python run_rom.py --help
 
 Options:
-  --scale SCALE     Window scale (default: 3)
-  --fps FPS         FPS cap (default: 60)
-  --headless        Run without a window
-  --debug           Enable debug logging
+  --scale SCALE       Window scale (default: 3)
+  --fps FPS           FPS cap (default: 60)
+  --headless          Run without a window
+  --boot-rom PATH     Path to boot ROM file (optional)
 ```
 
 ### Examples
@@ -202,6 +202,8 @@ DotMatrixPy/
 │   ├── gpu.py       # VRAM management
 │   ├── io.py        # I/O registers (Timer, Joypad, Serial)
 │   └── ppu.py       # Pixel Processing Unit
+├── tests/
+│   └── run_mooneye.py  # Mooneye Test Suite runner
 ├── run_rom.py       # Main entry point
 ├── requirements.txt
 └── README.md
@@ -214,8 +216,7 @@ This emulator passes the Mooneye acceptance test suite for DMG timing accuracy.
 ## Performance Tips
 
 1. **Use PyPy**: 5-10x faster than Python
-2. **Disable debug mode**: `--debug` flag significantly impacts performance
-3. **Lower scale**: Smaller window = less rendering overhead
+2. **Lower scale**: Smaller window = less rendering overhead
 
 ## License
 
