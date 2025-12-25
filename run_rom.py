@@ -19,39 +19,16 @@ def main() -> int:
 
 	gb = GameBoy.from_rom(args.rom, boot_rom=args.boot_rom)
 
-	# Load save data if exists
 	save_path = gb.bus.cartridge.get_save_path(args.rom)
-	if gb.bus.cartridge.load_ram(save_path):
-		print(f"Loaded save data from {save_path.name}")
+	gb.bus.cartridge.load_ram(save_path)
 
 	if args.headless:
 		for _ in range(120):
 			gb.run_until_frame()
-		# Save on exit in headless mode too
-		if gb.bus.cartridge.save_ram(save_path):
-			print(f"Saved data to {save_path.name}")
+		gb.bus.cartridge.save_ram(save_path)
 		return 0
 
 	try:
-		try:
-			import sdl2dll
-		except Exception:
-			sdl2dll = None
-
-		if sdl2dll is not None:
-			set_fn = getattr(sdl2dll, "set_dll_path", None) or getattr(sdl2dll, "set_dllpath", None)
-			get_fn = getattr(sdl2dll, "get_dllpath", None) or getattr(sdl2dll, "get_dll_path", None)
-			if callable(set_fn):
-				set_fn()
-			elif callable(get_fn):
-				dll_dir = get_fn()
-				if dll_dir:
-					import os
-					if hasattr(os, "add_dll_directory"):
-						os.add_dll_directory(dll_dir)
-					else:
-						os.environ["PATH"] = str(dll_dir) + os.pathsep + os.environ.get("PATH", "")
-
 		import ctypes
 		import sdl2
 	except ImportError as exc:
@@ -115,24 +92,16 @@ def main() -> int:
 		}
 
 		from gb.apu import SAMPLE_RATE
-		audio_enabled = True
-
 		try:
 			desired = sdl2.SDL_AudioSpec(SAMPLE_RATE, sdl2.AUDIO_F32, 2, 2048)
 			obtained = sdl2.SDL_AudioSpec(SAMPLE_RATE, sdl2.AUDIO_F32, 2, 2048)
-
 			audio_device = sdl2.SDL_OpenAudioDevice(
 				None, 0, ctypes.byref(desired), ctypes.byref(obtained), 0
 			)
-
-			if audio_device == 0:
-				print(f"Warning: SDL_OpenAudioDevice failed: {sdl2.SDL_GetError().decode('utf-8', 'replace')}")
-				audio_enabled = False
-			else:
+			if audio_device:
 				sdl2.SDL_PauseAudioDevice(audio_device, 0)
-		except Exception as e:
-			print(f"Warning: Audio initialization failed: {e}")
-			audio_enabled = False
+		except Exception:
+			audio_device = None
 
 		running = True
 		target_dt = 1.0 / max(1, int(args.fps))
@@ -159,7 +128,7 @@ def main() -> int:
 
 			gb.run_until_frame()
 
-			if audio_enabled and audio_device:
+			if audio_device:
 				samples = gb.bus.apu.get_samples()
 				if samples:
 					sample_array = (ctypes.c_float * len(samples))(*samples)
@@ -189,9 +158,7 @@ def main() -> int:
 			last_t = time.perf_counter()
 
 	finally:
-		# Save data on exit
-		if gb.bus.cartridge.save_ram(save_path):
-			print(f"Saved data to {save_path.name}")
+		gb.bus.cartridge.save_ram(save_path)
 		if audio_device:
 			sdl2.SDL_CloseAudioDevice(audio_device)
 		if texture:
