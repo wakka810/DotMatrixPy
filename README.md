@@ -4,6 +4,24 @@ A Game Boy (DMG) emulator written in Python with audio support! 🎮
 
 ---
 
+## Production Period
+
+December 2025
+
+
+
+## Overview
+
+DotMatrixPy is a Game Boy (DMG-01) emulator implemented in pure Python. It targets the Sharp SM83 CPU architecture and provides cycle-accurate timing emulation. The project is designed to run on the PyPy JIT compiler to achieve real-time execution speeds for commercial software. The codebase is structured to separate hardware components—CPU, PPU, APU, and Bus—into distinct classes, mirroring the internal architecture of the original hardware.
+
+The core logic emulates the SM83 instruction set at the machine-cycle level. The Pixel Processing Unit (PPU) implementation simulates the internal pixel fetcher and FIFO mechanism, explicitly handling Mode 0-3 timing and STAT interrupts. This structure enables the correct rendering of scanline-based visual effects and precise interrupt handling required by specific software titles.
+
+**Technical Specifications:**
+*   **CPU**: Implements the full SM83 instruction set with accurate cycle counts and flag handling.
+*   **PPU**: Simulates the pixel pipeline (fetcher, FIFO, render mode transitions) accurately to the dot (T-cycle).
+*   **Audio**: Generates sound using SDL2, supporting Pulse 1/2, Wave, and Noise channels with envelope and sweep functions.
+*   **Memory**: Supports MBC1, MBC3, and MBC5 memory bank controllers for ROM and RAM banking.
+
 ## Features
 
 - **CPU**: Full SM83 (LR35902) instruction set emulation
@@ -15,11 +33,14 @@ A Game Boy (DMG) emulator written in Python with audio support! 🎮
 
 ## Screenshots
 
+<!--
 ![Screenshot 1](screenshots/screenshot1.png)
 *TODO: Add screenshot*
 
 ![Screenshot 2](screenshots/screenshot2.png)
 *TODO: Add screenshot*
+-->
+*Screenshots coming soon*
 
 ## Requirements
 
