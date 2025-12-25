@@ -10,16 +10,17 @@ December 2025
 
 
 
+
 ## Overview
 
-DotMatrixPy is a Game Boy (DMG-01) emulator implemented in pure Python. It targets the Sharp SM83 CPU architecture and provides cycle-accurate timing emulation. The project is designed to run on the PyPy JIT compiler to achieve real-time execution speeds for commercial software. The codebase is structured to separate hardware components—CPU, PPU, APU, and Bus—into distinct classes, mirroring the internal architecture of the original hardware.
+DotMatrixPy is a Game Boy (DMG-01) emulator implemented in pure Python. It targets the Sharp SM83 CPU architecture. It provides cycle-accurate timing emulation. The project runs on the PyPy JIT compiler to achieve real-time execution speeds. The codebase mirrors the internal architecture of the hardware. The CPU, PPU, APU, and Bus are separated into distinct classes.
 
-The core logic emulates the SM83 instruction set at the machine-cycle level. The Pixel Processing Unit (PPU) implementation simulates the internal pixel fetcher and FIFO mechanism, explicitly handling Mode 0-3 timing and STAT interrupts. This structure enables the correct rendering of scanline-based visual effects and precise interrupt handling required by specific software titles.
+The core logic emulates the SM83 instruction set at the machine-cycle level. The Pixel Processing Unit (PPU) implementation simulates the internal pixel fetcher and FIFO mechanism. It explicitly handles Mode 0-3 timing and STAT interrupts. This enables the correct rendering of scanline-based visual effects. It also supports precise interrupt handling required by some software.
 
 **Technical Specifications:**
 *   **CPU**: Implements the full SM83 instruction set with accurate cycle counts and flag handling.
 *   **PPU**: Simulates the pixel pipeline (fetcher, FIFO, render mode transitions) accurately to the dot (T-cycle).
-*   **Audio**: Generates sound using SDL2, supporting Pulse 1/2, Wave, and Noise channels with envelope and sweep functions.
+*   **Audio**: Generates sound using SDL2. Supports Pulse 1/2, Wave, and Noise channels with envelope and sweep functions.
 *   **Memory**: Supports MBC1, MBC3, and MBC5 memory bank controllers for ROM and RAM banking.
 
 ## Features
