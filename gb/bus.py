@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional, TYPE_CHECKING
 
+from .apu import APU
 from .cartridge import Cartridge
 from .gpu import GPU, VRAM_BEGIN, VRAM_END
 from .io import IO
@@ -21,6 +22,7 @@ class BUS:
     cartridge: Optional[Cartridge] = None
     gpu: GPU = field(default_factory=GPU)
     io: IO = field(default_factory=IO)
+    apu: APU = field(default_factory=APU)
     ppu: Optional["PPU"] = None
 
     wram: bytearray = field(default_factory=lambda: bytearray(0x2000))
@@ -160,6 +162,9 @@ class BUS:
         if address == 0xFF44 and self.ppu is not None:
             return self.ppu.peek_ly(cpu_offset)
 
+        if 0xFF10 <= address <= 0xFF3F:
+            return self.apu.read_register(address - 0xFF00)
+
         if (0xFF00 <= address <= 0xFF7F) or address in (0xFF0F, 0xFFFF):
             return self.io.read(address, offset=cpu_offset)
 
@@ -209,6 +214,10 @@ class BUS:
         if address == 0xFF46:
             self.io.regs[0x46] = value
             self._schedule_dma(access_time, value)
+            return
+
+        if 0xFF10 <= address <= 0xFF3F:
+            self.apu.write_register(address - 0xFF00, value)
             return
 
         if (0xFF00 <= address <= 0xFF7F) or address in (0xFF0F, 0xFFFF):

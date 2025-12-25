@@ -1,0 +1,8 @@
+# DotMatrixPy - Game Boy Emulator
+# Install with: pip install -r requirements.txt
+
+# SDL2 Python bindings for graphics and audio
+pysdl2>=0.9.16
+
+# SDL2 DLL for Windows/macOS (not needed on Linux with system SDL2)
+pysdl2-dll>=2.28.0
