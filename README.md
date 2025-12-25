@@ -36,6 +36,12 @@ The core logic emulates the SM83 instruction set at the machine-cycle level. The
 <table>
   <tr>
     <td align="center" width="33%">
+      <a href="https://github.com/user-attachments/assets/014523fc-8655-4f00-9f35-16a401c160fb">
+        <img src="https://github.com/user-attachments/assets/014523fc-8655-4f00-9f35-16a401c160fb" width="420" alt="Boot ROM - emulator test screenshot" />
+      </a><br />
+      <b>Boot ROM</b>
+    </td>
+    <td align="center" width="33%">
       <a href="https://tangramgames.itch.io/tobu-tobu-girl-deluxe">
         <img src="https://github.com/user-attachments/assets/1ef81d81-bf4a-41e3-a67b-86830d4b8cf7" width="420" alt="Tobu Tobu Girl Deluxe - emulator test screenshot" />
       </a><br />
@@ -47,14 +53,15 @@ The core logic emulates the SM83 instruction set at the machine-cycle level. The
       </a><br />
       <b><a href="https://izma.itch.io/deadeus">Deadeus</a></b>
     </td>
+  </tr>
+
+  <tr>
     <td align="center" width="33%">
       <a href="https://snorpung.itch.io/dangan-gb">
         <img src="https://github.com/user-attachments/assets/8d698684-9944-45b6-93e7-4d660b0711d8" width="420" alt="Dangan GB - emulator test screenshot" />
       </a><br />
       <b><a href="https://snorpung.itch.io/dangan-gb">Dangan GB</a></b>
     </td>
-  </tr>
-  <tr>
     <td align="center" width="33%">
       <a href="https://github.com/mattcurrie/dmg-acid2">
         <img src="https://github.com/user-attachments/assets/d8c53d0c-b953-4367-a258-6f874ed56188" width="420" alt="dmg-acid2 - emulator test screenshot" />
@@ -67,10 +74,8 @@ The core logic emulates the SM83 instruction set at the machine-cycle level. The
       </a><br />
       <b><a href="https://binji.itch.io/porklikegb">Porklike</a></b>
     </td>
-    <td width="33%"></td>
   </tr>
 </table>
-
 
 
 ## Requirements
