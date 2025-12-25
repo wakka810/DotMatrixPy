@@ -11,12 +11,13 @@ def main() -> int:
 	parser.add_argument("--scale", type=int, default=3, help="Window scale (default: 3)")
 	parser.add_argument("--fps", type=int, default=60, help="FPS cap (default: 60)")
 	parser.add_argument("--headless", action="store_true", help="Run without a window")
+	parser.add_argument("--boot-rom", type=Path, help="Path to boot ROM file")
 	args = parser.parse_args()
 
 	from gb.gameboy import GameBoy
 	from gb.ppu import SCREEN_H, SCREEN_W
 
-	gb = GameBoy.from_rom(args.rom)
+	gb = GameBoy.from_rom(args.rom, boot_rom=args.boot_rom)
 
 	if args.headless:
 		for _ in range(120):

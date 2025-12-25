@@ -25,6 +25,8 @@ class BUS:
     apu: APU = field(default_factory=APU)
     ppu: Optional["PPU"] = None
 
+    boot_rom: bytes | None = None
+
     wram: bytearray = field(default_factory=lambda: bytearray(0x2000))
     hram: bytearray = field(default_factory=lambda: bytearray(0x7F))
     oam: bytearray = field(default_factory=lambda: bytearray(0xA0))
@@ -132,6 +134,12 @@ class BUS:
             return 0xFF
 
         if 0x0000 <= address <= 0x7FFF:
+            if self.boot_rom is not None and address < 0x100:
+                if (self.io.regs[0x50] & 1) == 0:
+                    if address < len(self.boot_rom):
+                        return self.boot_rom[address]
+                    return 0xFF
+
             if self.cartridge is None:
                 return 0xFF
             return self.cartridge.read_rom(address)
