@@ -236,6 +236,32 @@ class APU:
     audio_buffer: list[float] = field(default_factory=list)
     buffer_size: int = 2048
 
+    def reset_dmg(self) -> None:
+        self.enabled = True
+        self.ch1.enabled = True
+        self.ch1.dac_enabled = True
+        self.ch1.duty = 2
+        self.ch1.length_counter = 0
+        self.ch1.volume_init = 0x0F
+        self.ch1.envelope_add = False
+        self.ch1.envelope_period = 3
+        self.ch1.volume = 0x0F
+
+        self.ch2.enabled = False
+        self.ch2.dac_enabled = False
+        self.ch2.duty = 0
+        self.ch2.length_counter = 0
+
+        self.ch3.enabled = False
+        self.ch3.dac_enabled = False
+
+        self.ch4.enabled = False
+        self.ch4.dac_enabled = False
+
+        self.left_volume = 7
+        self.right_volume = 7
+        self.panning = 0xF3
+
     def tick(self, cycles: int) -> None:
         if not self.enabled:
             return

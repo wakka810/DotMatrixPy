@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -30,7 +31,9 @@ class GameBoy:
 		return gb
 
 	def load_rom(self, rom_path: str | Path) -> None:
-		self.bus.cartridge = Cartridge.from_file(rom_path)
+		rom_path = Path(rom_path)
+		data = rom_path.read_bytes()
+		self.bus.cartridge = Cartridge.from_bytes(data)
 
 	def reset_dmg(self) -> None:
 		self.cpu.regs.set_af(0x01B0)
@@ -46,12 +49,9 @@ class GameBoy:
 		io = self.bus.io
 		io.interrupt_enable = 0x00
 		io.interrupt_flag = 0xE1
-		io.regs[0x00] = 0x00
 
-		io.regs[0x04] = 0x00
-		io.regs[0x05] = 0x00
-		io.regs[0x06] = 0x00
-		io.regs[0x07] = 0x00
+		io._div_counter = 0xABCC
+		io.regs[0x04] = 0xAB
 
 		io.regs[0x40] = 0x91
 		io.regs[0x41] = 0x85
@@ -65,9 +65,12 @@ class GameBoy:
 		io.regs[0x4A] = 0x00
 		io.regs[0x4B] = 0x00
 
+		self.bus.apu.reset_dmg()
+
 		self.ppu.notify_io_write(0xFF40, io.regs[0x40])
 		self.ppu.notify_io_write(0xFF45, io.regs[0x45])
-		self.ppu.notify_io_write(0xFF44, io.regs[0x44])
+		self.ppu._line = 0
+		self.ppu._dot = 0
 
 	def step(self) -> int:
 		cycles = self.cpu.step()
