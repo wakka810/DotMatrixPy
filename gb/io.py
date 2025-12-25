@@ -72,8 +72,6 @@ class IO:
         self.interrupt_flag = 0xE1
         self.interrupt_enable = 0x00
 
-        # DMG ABC/MGB post-boot divider phase: DIV is 0xAB at t=0, and the
-        # next increment occurs 52 cycles later (used by mooneye boot_div).
         self._div_counter = 0xABCC
         self.regs[0x04] = (self._div_counter >> 8) & 0xFF
 
@@ -301,8 +299,6 @@ class IO:
         self.regs[0x02] = value & 0x81
         self._serial_internal_clock = (value & 0x01) != 0
         self._serial_active = True
-        # Align the serial clock to the free-running divider (bit 8 falling edge).
-        # Use the divider counter phase so edges stay aligned to the reset state.
         self._serial_cycle_acc = int(self._div_counter) & 0x1FF
         self._serial_bits_left = 8
         self._serial_latch_out = self.regs[0x01] & 0xFF
@@ -399,7 +395,6 @@ class IO:
                 self._apply_tma_write()
                 self._tma_pending_offset = None
             self._apply_reload_if_due()
-            # continue loop for any remaining cycles/events
 
     def _div_counter_at_offset(self, offset: int) -> int:
         offset = int(offset)

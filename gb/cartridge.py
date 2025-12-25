@@ -120,21 +120,8 @@ def _cart_has_rtc(cart_type: int) -> bool:
 
 
 def _cart_has_battery(cart_type: int) -> bool:
-    """Check if cartridge type has battery backup for save data."""
     ct = cart_type & 0xFF
-    return ct in (
-        0x03,  # MBC1+RAM+BATTERY
-        0x06,  # MBC2+BATTERY
-        0x09,  # ROM+RAM+BATTERY
-        0x0D,  # MMM01+RAM+BATTERY
-        0x0F,  # MBC3+TIMER+BATTERY
-        0x10,  # MBC3+TIMER+RAM+BATTERY
-        0x13,  # MBC3+RAM+BATTERY
-        0x1B,  # MBC5+RAM+BATTERY
-        0x1E,  # MBC5+RUMBLE+RAM+BATTERY
-        0x22,  # MBC7+SENSOR+RUMBLE+RAM+BATTERY
-        0xFF,  # HuC1+RAM+BATTERY
-    )
+    return ct in (0x03, 0x06, 0x09, 0x0D, 0x0F, 0x10, 0x13, 0x1B, 0x1E, 0x22, 0xFF)
 
 
 def _is_power_of_two(n: int) -> bool:
@@ -305,10 +292,9 @@ class _RTC:
             return
 
     def to_bytes(self) -> bytes:
-        """Serialize RTC state to 48-byte VBA-M compatible format (little-endian)."""
+        """Serialize RTC state to 48-byte VBA-M compatible format."""
         import struct
         self._sync()
-        # Build day_hi byte: bit0 = day bit8, bit6 = halt, bit7 = carry
         day_hi = ((self.day >> 8) & 0x01) | (0x40 if self.halt else 0) | (0x80 if self.carry else 0)
         latched_day_hi = 0
         if self._latched_valid:
@@ -316,10 +302,6 @@ class _RTC:
             latched_day_hi = ((ld >> 8) & 0x01) | (0x40 if lhalt else 0) | (0x80 if lcarry else 0)
         else:
             ls, lm, lh, ld = self.seconds, self.minutes, self.hours, self.day
-        # 48-byte format:
-        # 0-3: seconds, 4-7: minutes, 8-11: hours, 12-15: days (low 8 bits), 16-19: day_hi
-        # 20-23: latched sec, 24-27: latched min, 28-31: latched hour, 32-35: latched day, 36-39: latched day_hi
-        # 40-47: unix timestamp (64-bit)
         return struct.pack(
             "<IIIIIIIIIIQ",
             self.seconds & 0xFF,
@@ -337,11 +319,9 @@ class _RTC:
 
     @classmethod
     def from_bytes(cls, data: bytes) -> "_RTC":
-        """Deserialize RTC state from 44 or 48-byte format."""
         import struct
         if len(data) < 44:
             return cls()
-        # Support both 44-byte (32-bit timestamp) and 48-byte (64-bit timestamp)
         if len(data) >= 48:
             sec, min_, hr, day_lo, day_hi, lsec, lmin, lhr, lday_lo, lday_hi, ts = struct.unpack("<IIIIIIIIIIQ", data[:48])
         else:
@@ -364,7 +344,6 @@ class _RTC:
         rtc._last_ts = ts if ts != 0x7FFFFFFF7FFFFFFF else _now_seconds()
         rtc._latched = (lsec % 60, lmin % 60, lhr % 24, lday & 0x1FF, lhalt, lcarry)
         rtc._latched_valid = True
-        # Sync time to advance RTC based on saved timestamp
         rtc._sync()
         return rtc
 
@@ -712,23 +691,15 @@ class Cartridge:
             return
 
     def has_battery(self) -> bool:
-        """Check if this cartridge has battery backup for save data."""
         return _cart_has_battery(self.header.cartridge_type)
 
     def save_ram(self, path: str | Path) -> bool:
-        """Save RAM (and RTC if applicable) to a .sav file.
-        
-        Returns True if data was saved, False if cartridge has no battery.
-        """
         if not self.has_battery():
             return False
         if len(self.ram) == 0 and self._mbc3_rtc is None:
             return False
-        
         path = Path(path)
         data = bytes(self.ram)
-        
-        # Append RTC data if MBC3 with RTC
         if self._mbc3_rtc is not None:
             data += self._mbc3_rtc.to_bytes()
         
@@ -736,10 +707,6 @@ class Cartridge:
         return True
 
     def load_ram(self, path: str | Path) -> bool:
-        """Load RAM (and RTC if applicable) from a .sav file.
-        
-        Returns True if data was loaded, False if file doesn't exist or cartridge has no battery.
-        """
         if not self.has_battery():
             return False
         
@@ -757,7 +724,6 @@ class Cartridge:
         
         ram_size = len(self.ram)
         
-        # Detect RTC data: file is either 44 or 48 bytes larger than expected RAM
         has_rtc_data = False
         rtc_data = b""
         if self._mbc3_rtc is not None:
@@ -770,26 +736,21 @@ class Cartridge:
                 rtc_data = data[ram_size:ram_size + 44]
                 data = data[:ram_size]
             elif len(data) > ram_size:
-                # Try to detect RTC at end (file may be padded)
                 extra = len(data) - ram_size
                 if extra >= 44:
                     has_rtc_data = True
                     rtc_data = data[ram_size:ram_size + min(extra, 48)]
                     data = data[:ram_size]
         
-        # Load RAM data
         if ram_size > 0:
             copy_len = min(len(data), ram_size)
             self.ram[:copy_len] = data[:copy_len]
-        
-        # Load RTC data
         if has_rtc_data and self._mbc3_rtc is not None and len(rtc_data) >= 44:
             self._mbc3_rtc = _RTC.from_bytes(rtc_data)
         
         return True
 
     def get_save_path(self, rom_path: str | Path) -> Path:
-        """Get the default save file path for a ROM."""
         rom_path = Path(rom_path)
         return rom_path.with_suffix(".sav")
 

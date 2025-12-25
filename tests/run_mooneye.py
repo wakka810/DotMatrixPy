@@ -187,6 +187,7 @@ def main(argv: list[str] | None = None) -> int:
 		help="Skip ROMs that have this path part (repeatable). Default: manual-only, madness, utils",
 	)
 	parser.add_argument("--debug", action="store_true", help="Enable debug logging (CPU trace)")
+	parser.add_argument("-v", "--verbose", action="store_true", help="Show progress for each ROM (hidden by default)")
 	args = parser.parse_args(argv)
 
 	if args.debug:
@@ -216,7 +217,8 @@ def main(argv: list[str] | None = None) -> int:
 
 	results: list[TestResult] = []
 	for i, rom in enumerate(roms, start=1):
-		print(f"[{i}/{len(roms)}] {rom.as_posix()} ...", end=" ", flush=True)
+		if args.verbose:
+			print(f"[{i}/{len(roms)}] {rom.as_posix()} ...", end=" ", flush=True)
 		r = run_one_rom(
 			rom,
 			timeout_s=float(args.timeout_seconds),
@@ -225,7 +227,8 @@ def main(argv: list[str] | None = None) -> int:
 			print_serial=bool(args.print_serial),
 		)
 		results.append(r)
-		print(f"{r.status} ({r.elapsed_s:.2f}s, {r.cycles} cycles)")
+		if args.verbose:
+			print(f"{r.status} ({r.elapsed_s:.2f}s, {r.cycles} cycles)")
 		if args.stop_on_fail and r.status in ("FAIL", "TIMEOUT", "ERROR"):
 			break
 

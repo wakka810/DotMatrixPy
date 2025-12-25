@@ -167,7 +167,8 @@ class PPU:
     _line_mode2_delay: int = 0
     _post_enable_delay_lines_remaining: int = 0
     _pending_coincidence_dot: int = -1
-    _pending_stat_mode0_dot: int = -1\
+    _pending_stat_mode0_dot: int = -1
+    _mode0_irq_delay_active: bool = False
 
     _line_sprites: List[Sprite] = field(default_factory=list)
 
@@ -426,7 +427,6 @@ class PPU:
     def _vram_writable_at_offset(self, offset: int) -> bool:
         if not self._enabled:
             return True
-        # offset = max(0, int(offset) - 4)
         offset = self._offset_after_enable_delay(offset)
         dot2 = self._dot + offset
         line = self._line
@@ -611,6 +611,9 @@ class PPU:
         if self._pending_coincidence_dot >= 0 and self._dot < self._pending_coincidence_dot:
             d = min(d, self._pending_coincidence_dot - self._dot)
 
+        if self._pending_stat_mode0_dot >= 0 and self._dot < self._pending_stat_mode0_dot:
+            d = min(d, self._pending_stat_mode0_dot - self._dot)
+
         if self._line0_quirk:
             if self._mode == 0 and self._dot < LINE0_MODE0_END:
                 d = min(d, LINE0_MODE0_END - self._dot)
@@ -679,6 +682,7 @@ class PPU:
                 delay = self._line_mode2_delay
                 if self._mode == 0 and delay and self._dot == delay:
                     self._mode = 2
+                    self._mode0_irq_delay_active = (self._effective_stat_select() & 0x08) != 0
                     self._prepare_visible_line()
                     self._write_stat()
                     self._update_stat_irq()
@@ -746,8 +750,10 @@ class PPU:
             self._line_mode2_delay = delay
             if delay:
                 self._mode = 0
+                self._mode0_irq_delay_active = False
             else:
                 self._mode = 2
+                self._mode0_irq_delay_active = (self._effective_stat_select() & 0x08) != 0
 
         if self._line == VBLANK_START_LINE:
             io.request_interrupt(VBLANK_INTERRUPT_MASK)
@@ -836,7 +842,6 @@ class PPU:
             and self._line == VBLANK_START_LINE
             and self._dot == 0
         ):
-            # DMG quirk: mode 2 STAT interrupt also triggers on line 144 at VBlank start.
             line = True
         elif (select & 0x40) and self._coin:
             line = True
@@ -846,8 +851,7 @@ class PPU:
         self._stat_irq_line = line
 
     def _schedule_stat_mode0_irq(self) -> None:
-        if self._effective_stat_select() & 0x08:
-            # DMG timing: mode 0 STAT IRQ is observed one M-cycle after mode 0 begins.
+        if self._mode0_irq_delay_active:
             self._pending_stat_mode0_dot = self._dot + 4
 
     def _prepare_visible_line(self) -> None:
@@ -909,7 +913,6 @@ class PPU:
                 used_sprite_override = True
         if (not used_sprite_override) and bg_on:
             scx_mod = scx & 7
-            # DMG timing: SCX penalty rounds to 4-dot steps (affects HBlank/LY timing).
             if scx_mod:
                 length += ((scx_mod + 3) // 4) * 4
             if win_on and (0 < win_x < 160):
