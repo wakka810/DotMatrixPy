@@ -28,6 +28,7 @@ The core logic emulates the SM83 instruction set at the machine-cycle level. The
 - **Timer**: Cycle-accurate timer implementation
 - **Input**: Keyboard input for all Game Boy buttons
 - **MBC**: Memory Bank Controller support (MBC1, MBC3, MBC5)
+- **Save Data**: Battery-backed RAM support with automatic save/load (.sav files)
 
 ## Screenshots
 

@@ -19,9 +19,17 @@ def main() -> int:
 
 	gb = GameBoy.from_rom(args.rom, boot_rom=args.boot_rom)
 
+	# Load save data if exists
+	save_path = gb.bus.cartridge.get_save_path(args.rom)
+	if gb.bus.cartridge.load_ram(save_path):
+		print(f"Loaded save data from {save_path.name}")
+
 	if args.headless:
 		for _ in range(120):
 			gb.run_until_frame()
+		# Save on exit in headless mode too
+		if gb.bus.cartridge.save_ram(save_path):
+			print(f"Saved data to {save_path.name}")
 		return 0
 
 	try:
@@ -181,6 +189,9 @@ def main() -> int:
 			last_t = time.perf_counter()
 
 	finally:
+		# Save data on exit
+		if gb.bus.cartridge.save_ram(save_path):
+			print(f"Saved data to {save_path.name}")
 		if audio_device:
 			sdl2.SDL_CloseAudioDevice(audio_device)
 		if texture:
