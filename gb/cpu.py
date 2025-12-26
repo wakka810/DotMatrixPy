@@ -637,6 +637,9 @@ class CPU:
         return self._op_table[opcode](opcode, op_off)
 
     def _op_unimplemented(self, opcode: int, op_off: int) -> int:
+        print(f"[CPU] Invalid opcode 0x{opcode:02X} at PC=0x{self.pc:04X} "
+              f"A={self.regs.a:02X} BC={self.regs.get_bc():04X} "
+              f"DE={self.regs.get_de():04X} HL={self.regs.get_hl():04X} SP={self.sp:04X}")
         self.pc = (self.pc + (op_off & 1)) & 0xFFFF
         return 4
 
