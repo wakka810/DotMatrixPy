@@ -81,7 +81,7 @@ The core logic emulates the SM83 instruction set at the machine-cycle level. The
 
 ## Requirements
 
-- Python 3.10+ (**PyPy recommended**)
+- Python 3.11+ (**PyPy recommended**)
 - PySDL2
 - pysdl2-dll (Windows/macOS)
 
@@ -102,7 +102,7 @@ DotMatrixPy is written in pure Python, so using **PyPy** can provide significant
 **Windows:**
 ```bash
 # Using winget
-winget install PyPy.PyPy3
+winget install PyPy3.11
 
 # Or download from https://www.pypy.org/download.html
 ```
