@@ -266,21 +266,55 @@ class APU:
         if not self.enabled:
             return
 
-        for _ in range(cycles):
-            self.ch1.tick_timer()
-            self.ch2.tick_timer()
-            self.ch3.tick_timer()
-            self.ch4.tick_timer()
+        cycles = int(cycles)
+        if cycles <= 0:
+            return
 
-            self.frame_sequencer_cycles += 1
-            if self.frame_sequencer_cycles >= 8192:
-                self.frame_sequencer_cycles = 0
-                self._tick_frame_sequencer()
+        self.frame_sequencer_cycles += cycles
+        while self.frame_sequencer_cycles >= 8192:
+            self.frame_sequencer_cycles -= 8192
+            self._tick_frame_sequencer()
 
-            self.sample_cycles += 1.0
-            if self.sample_cycles >= CYCLES_PER_SAMPLE:
-                self.sample_cycles -= CYCLES_PER_SAMPLE
+        self.ch1.timer -= cycles
+        period1 = (2048 - self.ch1.frequency) * 4
+        if period1 > 0:
+            while self.ch1.timer <= 0:
+                self.ch1.timer += period1
+                self.ch1.duty_pos = (self.ch1.duty_pos + 1) & 7
+
+        self.ch2.timer -= cycles
+        period2 = (2048 - self.ch2.frequency) * 4
+        if period2 > 0:
+            while self.ch2.timer <= 0:
+                self.ch2.timer += period2
+                self.ch2.duty_pos = (self.ch2.duty_pos + 1) & 7
+
+        self.ch3.timer -= cycles
+        period3 = (2048 - self.ch3.frequency) * 2
+        if period3 > 0:
+            while self.ch3.timer <= 0:
+                self.ch3.timer += period3
+                self.ch3.sample_pos = (self.ch3.sample_pos + 1) & 31
+
+        self.ch4.timer -= cycles
+        divisor = (1, 2, 4, 6, 8, 10, 12, 14)[self.ch4.divisor_code]
+        period4 = divisor << (self.ch4.clock_shift + 2)
+        if period4 > 0:
+            while self.ch4.timer <= 0:
+                self.ch4.timer += period4
+                xor_bit = (self.ch4.lfsr & 1) ^ ((self.ch4.lfsr >> 1) & 1)
+                self.ch4.lfsr = (self.ch4.lfsr >> 1) | (xor_bit << 14)
+                if self.ch4.width_mode == 1:
+                    self.ch4.lfsr = (self.ch4.lfsr & ~0x40) | (xor_bit << 6)
+
+        self.sample_cycles += cycles
+        while self.sample_cycles >= CYCLES_PER_SAMPLE:
+            self.sample_cycles -= CYCLES_PER_SAMPLE
+            if len(self.audio_buffer) < self.buffer_size * 2:
                 self._generate_sample()
+
+
+
 
     def _tick_frame_sequencer(self) -> None:
         step = self.frame_sequencer

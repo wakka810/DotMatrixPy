@@ -131,17 +131,20 @@ def main() -> int:
 			if audio_device:
 				samples = gb.bus.apu.get_samples()
 				if samples:
-					sample_array = (ctypes.c_float * len(samples))(*samples)
+					import array
+					sample_count = min(len(samples), 8192)
+					sample_data = array.array('f', samples[:sample_count])
 					sdl2.SDL_QueueAudio(
 						audio_device,
-						ctypes.cast(sample_array, ctypes.c_void_p),
-						len(samples) * ctypes.sizeof(ctypes.c_float),
+						sample_data.buffer_info()[0],
+						sample_count * ctypes.sizeof(ctypes.c_float),
 					)
 
 					max_queued = int(SAMPLE_RATE * 2 * 0.1 * ctypes.sizeof(ctypes.c_float))
 					queued = sdl2.SDL_GetQueuedAudioSize(audio_device)
 					if queued > max_queued:
 						sdl2.SDL_ClearQueuedAudio(audio_device)
+
 
 			if sdl2.SDL_UpdateTexture(texture, None, pixels, pitch) != 0:
 				raise SystemExit(

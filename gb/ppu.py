@@ -718,6 +718,7 @@ class PPU:
 
             break
 
+
     def _advance_line(self) -> None:
         io = self.bus.io
 
