@@ -504,6 +504,25 @@ class PPU:
     def peek_oam_accessible(self, offset: int = 0) -> bool:
         return self._oam_accessible_at_offset(offset)
 
+    def oam_bug_row(self, offset: int) -> int | None:
+        if not self._enabled:
+            return None
+        offset = int(offset)
+        if (self._mode_at_offset(offset) & 0x03) != 2:
+            return None
+        line, dot = self._line_dot_at_offset(offset)
+        if line >= VBLANK_START_LINE:
+            return None
+        if self._line0_quirk and line == 0:
+            return None
+        delay = self._line_mode2_delay
+        if line != self._line:
+            delay = POST_ENABLE_MODE2_DELAY if self._post_enable_delay_lines_remaining > 0 else 0
+        row = (dot - delay + 2) // 4
+        if row <= 0 or row >= 20:
+            return None
+        return int(row)
+
     def peek_stat(self, offset: int = 0) -> int:
         select = self._stat_select_at_offset(offset)
         if not self._enabled:

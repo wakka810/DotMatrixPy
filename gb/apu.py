@@ -120,6 +120,9 @@ class WaveChannel:
     frequency: int = 0
     timer: int = 0
     sample_pos: int = 0
+    sample_buffer: int = 0
+    access_timer: int = 0xFFFF
+    last_access_pos: int | None = None
     wave_ram: bytearray = field(default_factory=lambda: bytearray(16))
 
     def tick_timer(self) -> None:
@@ -131,8 +134,7 @@ class WaveChannel:
     def output(self) -> int:
         if not self.enabled or not self.dac_enabled:
             return 0
-        byte_idx = self.sample_pos >> 1
-        sample = self.wave_ram[byte_idx]
+        sample = self.sample_buffer & 0xFF
         if (self.sample_pos & 1) == 0:
             sample = (sample >> 4) & 0x0F
         else:
@@ -150,8 +152,10 @@ class WaveChannel:
         self.enabled = True
         if self.length_counter == 0:
             self.length_counter = 256
-        self.timer = (2048 - self.frequency) * 2
+        self.timer = (2048 - self.frequency) * 2 + 6
         self.sample_pos = 0
+        self.access_timer = 0xFFFF
+        self.last_access_pos = None
         if not self.dac_enabled:
             self.enabled = False
 
@@ -231,13 +235,13 @@ class APU:
     vin_right: bool = False
     panning: int = 0xFF
     frame_sequencer: int = 0
-    frame_sequencer_cycles: int = 0
     sample_cycles: float = 0.0
     audio_buffer: list[float] = field(default_factory=list)
     buffer_size: int = 2048
 
     def reset_dmg(self) -> None:
         self.enabled = True
+        self.frame_sequencer = 0
         self.ch1.enabled = True
         self.ch1.dac_enabled = True
         self.ch1.duty = 2
@@ -262,17 +266,17 @@ class APU:
         self.right_volume = 7
         self.panning = 0xF3
 
-    def tick(self, cycles: int) -> None:
+    def tick(self, cycles: int, div_ticks: int = 0, wave_pre_advance: int = 0) -> None:
         if not self.enabled:
             return
 
         cycles = int(cycles)
-        if cycles <= 0:
+        div_ticks = int(div_ticks)
+        wave_pre_advance = int(wave_pre_advance)
+        if cycles <= 0 and div_ticks <= 0:
             return
 
-        self.frame_sequencer_cycles += cycles
-        while self.frame_sequencer_cycles >= 8192:
-            self.frame_sequencer_cycles -= 8192
+        for _ in range(div_ticks):
             self._tick_frame_sequencer()
 
         self.ch1.timer -= cycles
@@ -289,12 +293,9 @@ class APU:
                 self.ch2.timer += period2
                 self.ch2.duty_pos = (self.ch2.duty_pos + 1) & 7
 
-        self.ch3.timer -= cycles
-        period3 = (2048 - self.ch3.frequency) * 2
-        if period3 > 0:
-            while self.ch3.timer <= 0:
-                self.ch3.timer += period3
-                self.ch3.sample_pos = (self.ch3.sample_pos + 1) & 31
+        wave_cycles = cycles - wave_pre_advance
+        if wave_cycles > 0:
+            self._tick_wave_timer(wave_cycles)
 
         self.ch4.timer -= cycles
         divisor = (1, 2, 4, 6, 8, 10, 12, 14)[self.ch4.divisor_code]
@@ -333,6 +334,25 @@ class APU:
             self.ch1.tick_envelope()
             self.ch2.tick_envelope()
             self.ch4.tick_envelope()
+
+    def _apply_length_enable_and_trigger(self, channel, value: int, trigger) -> None:
+        next_clocks_length = (self.frame_sequencer & 1) == 0
+        old_length_enabled = channel.length_enabled
+        channel.length_enabled = (value & 0x40) != 0
+
+        if (not old_length_enabled) and channel.length_enabled and channel.length_counter > 0:
+            if not next_clocks_length:
+                channel.length_counter -= 1
+                if channel.length_counter == 0:
+                    channel.enabled = False
+
+        if value & 0x80:
+            length_was_zero = channel.length_counter == 0
+            trigger()
+            if length_was_zero and channel.length_enabled and not next_clocks_length:
+                channel.length_counter -= 1
+                if channel.length_counter == 0:
+                    channel.enabled = False
 
     def _generate_sample(self) -> None:
         ch1_out = self.ch1.output()
@@ -374,6 +394,64 @@ class APU:
 
         self.audio_buffer.append(left)
         self.audio_buffer.append(right)
+
+    def _wave_pos_timer_at_offset(self, offset: int) -> tuple[int, int]:
+        offset = int(offset)
+        if offset <= 0:
+            return self.ch3.sample_pos, self.ch3.timer
+        period = (2048 - self.ch3.frequency) * 2
+        if period <= 0:
+            return self.ch3.sample_pos, self.ch3.timer
+        timer = self.ch3.timer - offset
+        pos = self.ch3.sample_pos
+        while timer <= 0:
+            timer += period
+            pos = (pos + 1) & 31
+        return pos, timer
+
+    def _maybe_corrupt_wave_ram_on_retrigger(self, cgb_mode: bool) -> None:
+        if cgb_mode:
+            return
+        if not self.ch3.enabled:
+            return
+        # DMG retrigger corruption happens when the channel is about to read the next byte.
+        # Use the remaining timer (time to next read) to model this prefetch window.
+        if self.ch3.timer > 2:
+            return
+        access_pos = (self.ch3.sample_pos + 1) & 31
+        cur_idx = (access_pos >> 1) & 0x0F
+        if cur_idx < 4:
+            self.ch3.wave_ram[0] = self.ch3.wave_ram[cur_idx] & 0xFF
+            return
+        block_start = (cur_idx // 4) * 4
+        for i in range(4):
+            self.ch3.wave_ram[i] = self.ch3.wave_ram[block_start + i] & 0xFF
+
+    def _wave_ram_accessible_dmg(self, pos: int, timer: int) -> bool:
+        return self.ch3.access_timer <= 1
+
+    def read_wave_ram(self, index: int, *, cgb_mode: bool, offset: int = 0) -> int:
+        index &= 0x0F
+        if self.ch3.enabled:
+            cur_byte = self.ch3.wave_ram[(self.ch3.sample_pos >> 1) & 0x0F]
+            if cgb_mode:
+                return cur_byte
+            if self._wave_ram_accessible_dmg(self.ch3.sample_pos, self.ch3.timer):
+                return cur_byte
+            return 0xFF
+        return self.ch3.wave_ram[index]
+
+    def write_wave_ram(self, index: int, value: int, *, cgb_mode: bool, offset: int = 0) -> None:
+        index &= 0x0F
+        value &= 0xFF
+        if self.ch3.enabled:
+            pos = self.ch3.sample_pos
+            if cgb_mode:
+                self.ch3.wave_ram[(pos >> 1) & 0x0F] = value
+            elif self._wave_ram_accessible_dmg(pos, self.ch3.timer):
+                self.ch3.wave_ram[(pos >> 1) & 0x0F] = value
+            return
+        self.ch3.wave_ram[index] = value
 
     def get_samples(self) -> list[float]:
         samples = self.audio_buffer
@@ -468,7 +546,7 @@ class APU:
 
         return 0xFF
 
-    def write_register(self, address: int, value: int) -> None:
+    def write_register(self, address: int, value: int, *, cgb_mode: bool = False) -> None:
         addr = address & 0xFF
         value &= 0xFF
 
@@ -476,10 +554,25 @@ class APU:
             was_enabled = self.enabled
             self.enabled = (value & 0x80) != 0
             if was_enabled and not self.enabled:
-                self._power_off()
+                self._power_off(cgb_mode=cgb_mode)
+            elif not was_enabled and self.enabled:
+                self.frame_sequencer = 0
             return
 
         if not self.enabled and not (0x30 <= addr <= 0x3F):
+            if not cgb_mode:
+                if addr == 0x11:
+                    self.ch1.length_counter = 64 - (value & 0x3F)
+                    return
+                if addr == 0x16:
+                    self.ch2.length_counter = 64 - (value & 0x3F)
+                    return
+                if addr == 0x1B:
+                    self.ch3.length_counter = 256 - value
+                    return
+                if addr == 0x20:
+                    self.ch4.length_counter = 64 - (value & 0x3F)
+                    return
             return
 
         if addr == 0x10:
@@ -503,9 +596,7 @@ class APU:
             self.ch1.frequency = (self.ch1.frequency & 0x700) | value
         elif addr == 0x14:
             self.ch1.frequency = (self.ch1.frequency & 0xFF) | ((value & 7) << 8)
-            self.ch1.length_enabled = (value & 0x40) != 0
-            if value & 0x80:
-                self.ch1.trigger(with_sweep=True)
+            self._apply_length_enable_and_trigger(self.ch1, value, lambda: self.ch1.trigger(with_sweep=True))
 
         elif addr == 0x16:
             self.ch2.duty = (value >> 6) & 3
@@ -521,9 +612,7 @@ class APU:
             self.ch2.frequency = (self.ch2.frequency & 0x700) | value
         elif addr == 0x19:
             self.ch2.frequency = (self.ch2.frequency & 0xFF) | ((value & 7) << 8)
-            self.ch2.length_enabled = (value & 0x40) != 0
-            if value & 0x80:
-                self.ch2.trigger(with_sweep=False)
+            self._apply_length_enable_and_trigger(self.ch2, value, lambda: self.ch2.trigger(with_sweep=False))
 
         elif addr == 0x1A:
             self.ch3.dac_enabled = (value & 0x80) != 0
@@ -537,9 +626,9 @@ class APU:
             self.ch3.frequency = (self.ch3.frequency & 0x700) | value
         elif addr == 0x1E:
             self.ch3.frequency = (self.ch3.frequency & 0xFF) | ((value & 7) << 8)
-            self.ch3.length_enabled = (value & 0x40) != 0
             if value & 0x80:
-                self.ch3.trigger()
+                self._maybe_corrupt_wave_ram_on_retrigger(cgb_mode)
+            self._apply_length_enable_and_trigger(self.ch3, value, self.ch3.trigger)
 
         elif addr == 0x20:
             self.ch4.length_counter = 64 - (value & 0x3F)
@@ -555,9 +644,7 @@ class APU:
             self.ch4.width_mode = (value >> 3) & 1
             self.ch4.divisor_code = value & 7
         elif addr == 0x23:
-            self.ch4.length_enabled = (value & 0x40) != 0
-            if value & 0x80:
-                self.ch4.trigger()
+            self._apply_length_enable_and_trigger(self.ch4, value, self.ch4.trigger)
 
         elif addr == 0x24:
             self.vin_left = (value & 0x80) != 0
@@ -570,7 +657,13 @@ class APU:
         elif 0x30 <= addr <= 0x3F:
             self.ch3.wave_ram[addr - 0x30] = value
 
-    def _power_off(self) -> None:
+    def _power_off(self, *, cgb_mode: bool) -> None:
+        if not cgb_mode:
+            ch1_len = self.ch1.length_counter
+            ch2_len = self.ch2.length_counter
+            ch3_len = self.ch3.length_counter
+            ch4_len = self.ch4.length_counter
+
         self.ch1 = SquareChannel()
         self.ch2 = SquareChannel()
         wave_ram = self.ch3.wave_ram
@@ -578,9 +671,59 @@ class APU:
         self.ch3.wave_ram = wave_ram
         self.ch4 = NoiseChannel()
 
+        if not cgb_mode:
+            self.ch1.length_counter = ch1_len
+            self.ch2.length_counter = ch2_len
+            self.ch3.length_counter = ch3_len
+            self.ch4.length_counter = ch4_len
+
         self.left_volume = 0
         self.right_volume = 0
         self.vin_left = False
         self.vin_right = False
         self.panning = 0
         self.frame_sequencer = 0
+    def _tick_wave_timer(self, cycles: int) -> None:
+        cycles = int(cycles)
+        if cycles <= 0:
+            return
+        if not self.ch3.enabled:
+            return
+        period = (2048 - self.ch3.frequency) * 2
+        if period <= 0:
+            return
+
+        timer = self.ch3.timer
+        access_timer = self.ch3.access_timer
+        pos = self.ch3.sample_pos
+        buffer = self.ch3.sample_buffer & 0xFF
+
+        remaining = cycles
+        while remaining > 0:
+            if timer > remaining:
+                timer -= remaining
+                if access_timer < 0xFFFF:
+                    access_timer = min(0xFFFF, access_timer + remaining)
+                remaining = 0
+                break
+
+            step = timer
+            remaining -= step
+            if access_timer < 0xFFFF:
+                access_timer = min(0xFFFF, access_timer + step)
+
+            timer = period
+            pos = (pos + 1) & 31
+            buffer = self.ch3.wave_ram[(pos >> 1) & 0x0F]
+            access_timer = 0
+            self.ch3.last_access_pos = pos
+
+        self.ch3.timer = timer
+        self.ch3.sample_pos = pos
+        self.ch3.sample_buffer = buffer & 0xFF
+        self.ch3.access_timer = access_timer
+
+    def tick_wave_only(self, cycles: int) -> None:
+        if not self.enabled:
+            return
+        self._tick_wave_timer(cycles)

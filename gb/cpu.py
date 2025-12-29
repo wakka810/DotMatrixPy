@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable, Tuple
 
-from gb.bus import BUS
+from gb.bus import BUS, OAM_BUG_READ, OAM_BUG_READ_INCDEC, OAM_BUG_WRITE
 import logging
 
 logger = logging.getLogger(__name__)
@@ -224,7 +224,9 @@ class CPU:
         return ie & ir & 0x1F
 
     def _service_interrupt(self) -> int:
-        pending0 = self._interrupt_pending()
+        ie_start = self._read8(0xFFFF)
+        ir_latch = self._read8(0xFF0F) & 0x1F
+        pending0 = ie_start & ir_latch & 0x1F
         if pending0 == 0 or not self.ime:
             return 0
 
@@ -239,16 +241,14 @@ class CPU:
         self.sp = (self.sp - 1) & 0xFFFF
         self._write8(self.sp, msb, offset=8)
 
-        pending = self._interrupt_pending()
-        if pending == 0:
-            self.sp = (self.sp - 1) & 0xFFFF
-            self._write8(self.sp, lsb, offset=12)
-            self.pc = 0x0000
-            return 20
+        # IF is latched at service start, but IE is sampled after the first
+        # push. If IE is overwritten by the high-byte write, it can cancel
+        # or change the interrupt selection. Changes during the low-byte
+        # push are too late to affect dispatch.
+        pending = (ir_latch & self._read8(0xFFFF)) & 0x1F
 
         self.sp = (self.sp - 1) & 0xFFFF
         self._write8(self.sp, lsb, offset=12)
-
         for i, vector in enumerate((0x40, 0x48, 0x50, 0x58, 0x60)):
             if pending & (1 << i):
                 ir = self._read8(0xFF0F)
@@ -536,6 +536,9 @@ class CPU:
                 f"A:{a:02X} F:{f:02X} B:{b:02X} C:{c:02X} D:{d:02X} E:{e:02X} H:{h:02X} L:{l:02X} SP:{sp:04X} PC:{pc:04X} PCMEM:{pcmem_str}"
             )
 
+        self.bus._ppu_pre_advance = 0
+        self.bus._ppu_pre_frame_ready = False
+
         ei_apply = self._ei_pending
 
         if self.stopped:
@@ -581,56 +584,103 @@ class CPU:
         x = (opcode >> 6) & 3
         inc = 2 - (1 - op_off)
 
-        if x == 0:
-            v = self._reg8_get(r)
-            if y == 0:
-                res, c = self._rlc(v)
-                self._set_flags(res == 0, False, False, c)
-                self._reg8_set(r, res)
-            elif y == 1:
-                res, c = self._rrc(v)
-                self._set_flags(res == 0, False, False, c)
-                self._reg8_set(r, res)
-            elif y == 2:
-                res, c = self._rl(v)
-                self._set_flags(res == 0, False, False, c)
-                self._reg8_set(r, res)
-            elif y == 3:
-                res, c = self._rr(v)
-                self._set_flags(res == 0, False, False, c)
-                self._reg8_set(r, res)
-            elif y == 4:
-                res, c = self._sla(v)
-                self._set_flags(res == 0, False, False, c)
-                self._reg8_set(r, res)
-            elif y == 5:
-                res, c = self._sra(v)
-                self._set_flags(res == 0, False, False, c)
-                self._reg8_set(r, res)
-            elif y == 6:
-                res = self._swap(v)
-                self._set_flags(res == 0, False, False, False)
-                self._reg8_set(r, res)
+        if r == 6:
+            addr = self.regs.get_hl()
+            read_off = 8
+            write_off = 12
+            v = self._read8(addr, offset=read_off)
+            if x == 0:
+                if y == 0:
+                    res, c = self._rlc(v)
+                    self._set_flags(res == 0, False, False, c)
+                elif y == 1:
+                    res, c = self._rrc(v)
+                    self._set_flags(res == 0, False, False, c)
+                elif y == 2:
+                    res, c = self._rl(v)
+                    self._set_flags(res == 0, False, False, c)
+                elif y == 3:
+                    res, c = self._rr(v)
+                    self._set_flags(res == 0, False, False, c)
+                elif y == 4:
+                    res, c = self._sla(v)
+                    self._set_flags(res == 0, False, False, c)
+                elif y == 5:
+                    res, c = self._sra(v)
+                    self._set_flags(res == 0, False, False, c)
+                elif y == 6:
+                    res = self._swap(v)
+                    self._set_flags(res == 0, False, False, False)
+                else:
+                    res, c = self._srl(v)
+                    self._set_flags(res == 0, False, False, c)
+                self._write8(addr, res, offset=write_off)
+                cycles = 16
+            elif x == 1:
+                bit = y & 7
+                z = ((v >> bit) & 1) == 0
+                self._set_flags(z, False, True, None)
+                cycles = 12
+            elif x == 2:
+                bit = y & 7
+                self._write8(addr, v & ~(1 << bit), offset=write_off)
+                cycles = 16
             else:
-                res, c = self._srl(v)
-                self._set_flags(res == 0, False, False, c)
-                self._reg8_set(r, res)
-        elif x == 1:
-            v = self._reg8_get(r)
-            bit = y & 7
-            z = ((v >> bit) & 1) == 0
-            self._set_flags(z, False, True, None)
-        elif x == 2:
-            v = self._reg8_get(r)
-            bit = y & 7
-            self._reg8_set(r, v & ~(1 << bit))
+                bit = y & 7
+                self._write8(addr, v | (1 << bit), offset=write_off)
+                cycles = 16
         else:
-            v = self._reg8_get(r)
-            bit = y & 7
-            self._reg8_set(r, v | (1 << bit))
+            if x == 0:
+                v = self._reg8_get(r)
+                if y == 0:
+                    res, c = self._rlc(v)
+                    self._set_flags(res == 0, False, False, c)
+                    self._reg8_set(r, res)
+                elif y == 1:
+                    res, c = self._rrc(v)
+                    self._set_flags(res == 0, False, False, c)
+                    self._reg8_set(r, res)
+                elif y == 2:
+                    res, c = self._rl(v)
+                    self._set_flags(res == 0, False, False, c)
+                    self._reg8_set(r, res)
+                elif y == 3:
+                    res, c = self._rr(v)
+                    self._set_flags(res == 0, False, False, c)
+                    self._reg8_set(r, res)
+                elif y == 4:
+                    res, c = self._sla(v)
+                    self._set_flags(res == 0, False, False, c)
+                    self._reg8_set(r, res)
+                elif y == 5:
+                    res, c = self._sra(v)
+                    self._set_flags(res == 0, False, False, c)
+                    self._reg8_set(r, res)
+                elif y == 6:
+                    res = self._swap(v)
+                    self._set_flags(res == 0, False, False, False)
+                    self._reg8_set(r, res)
+                else:
+                    res, c = self._srl(v)
+                    self._set_flags(res == 0, False, False, c)
+                    self._reg8_set(r, res)
+            elif x == 1:
+                v = self._reg8_get(r)
+                bit = y & 7
+                z = ((v >> bit) & 1) == 0
+                self._set_flags(z, False, True, None)
+            elif x == 2:
+                v = self._reg8_get(r)
+                bit = y & 7
+                self._reg8_set(r, v & ~(1 << bit))
+            else:
+                v = self._reg8_get(r)
+                bit = y & 7
+                self._reg8_set(r, v | (1 << bit))
+            cycles = 8
 
         self.pc = (self.pc + inc) & 0xFFFF
-        return 16 if r == 6 else 8
+        return cycles
 
     def _exec(self, opcode: int, op_off: int) -> int:
         opcode &= 0xFF
@@ -650,6 +700,11 @@ class CPU:
     def _op_stop(self, opcode: int, op_off: int) -> int:
         inc2 = 1 + (op_off & 1)
         self.pc = (self.pc + inc2) & 0xFFFF
+        io = self.bus.io
+        if io.cgb_mode and io.key1_prepare:
+            io.double_speed = not io.double_speed
+            io.key1_prepare = False
+            return 4
         self.stopped = True
         return 4
 
@@ -717,13 +772,17 @@ class CPU:
 
     def _op_inc_dd(self, opcode: int, op_off: int) -> int:
         dd = (opcode >> 4) & 3
-        self._reg16_set(dd, (self._reg16_get(dd) + 1) & 0xFFFF)
+        pre = self._reg16_get(dd)
+        self._reg16_set(dd, (pre + 1) & 0xFFFF)
+        self.bus.oam_bug_access(pre, 0, OAM_BUG_WRITE)
         self.pc = (self.pc + (op_off & 1)) & 0xFFFF
         return 8
 
     def _op_dec_dd(self, opcode: int, op_off: int) -> int:
         dd = (opcode >> 4) & 3
-        self._reg16_set(dd, (self._reg16_get(dd) - 1) & 0xFFFF)
+        pre = self._reg16_get(dd)
+        self._reg16_set(dd, (pre - 1) & 0xFFFF)
+        self.bus.oam_bug_access(pre, 0, OAM_BUG_WRITE)
         self.pc = (self.pc + (op_off & 1)) & 0xFFFF
         return 8
 
@@ -756,6 +815,7 @@ class CPU:
         addr = self.regs.get_hl()
         self.regs.a = self._read8(addr, offset=4)
         self.regs.set_hl((addr + 1) & 0xFFFF if opcode == 0x2A else (addr - 1) & 0xFFFF)
+        self.bus.oam_bug_access(addr, 4, OAM_BUG_READ_INCDEC)
         self.pc = (self.pc + (op_off & 1)) & 0xFFFF
         return 8
 
@@ -980,7 +1040,17 @@ class CPU:
 
     def _op_pop_qq(self, opcode: int, op_off: int) -> int:
         qq = (opcode >> 4) & 3
-        v = self.pop_u16(offset_lo=4, offset_hi=8)
+        sp0 = self.sp & 0xFFFF
+        lo = self._read8(sp0, offset=4)
+        sp1 = (sp0 + 1) & 0xFFFF
+        self.sp = sp1
+        self.bus.oam_bug_access(sp0, 4, OAM_BUG_READ_INCDEC)
+        hi = self._read8(sp1, offset=8)
+        sp2 = (sp1 + 1) & 0xFFFF
+        self.sp = sp2
+        # Also check sp1 for cases where sp0 is outside OAM range
+        self.bus.oam_bug_access(sp1, 4, OAM_BUG_READ)
+        v = ((hi << 8) | lo) & 0xFFFF
         if qq == 0:
             self.regs.set_bc(v)
         elif qq == 1:
@@ -1002,7 +1072,19 @@ class CPU:
             v = self.regs.get_hl()
         else:
             v = self.regs.get_af()
-        self.push_u16(v, offset_hi=8, offset_lo=12)
+        v &= 0xFFFF
+        msb = (v >> 8) & 0xFF
+        lsb = v & 0xFF
+        sp0 = self.sp & 0xFFFF
+        self.bus.oam_bug_access(sp0, 4, OAM_BUG_WRITE)
+        sp1 = (sp0 - 1) & 0xFFFF
+        self.sp = sp1
+        self._write8(sp1, msb, offset=8)
+        self.bus.oam_bug_access(sp1, 8, OAM_BUG_WRITE)
+        sp2 = (sp1 - 1) & 0xFFFF
+        self.sp = sp2
+        self._write8(sp2, lsb, offset=12)
+        self.bus.oam_bug_access(sp2, 12, OAM_BUG_WRITE)
         self.pc = (self.pc + (op_off & 1)) & 0xFFFF
         return 16
 

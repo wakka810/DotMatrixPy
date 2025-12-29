@@ -25,14 +25,15 @@ class TestResult:
 	error: str | None = None
 
 
-_FAIL_RE = re.compile(r"\\b(fail|failed|not\\s+ok)\\b", re.IGNORECASE)
-_PASS_RE = re.compile(r"\\b(pass|passed|ok)\\b", re.IGNORECASE)
+# Blargg tests output "Passed" or "Failed" in serial output
+_PASSED_RE = re.compile(r"\bPassed\b", re.IGNORECASE)
+_FAILED_RE = re.compile(r"\bFailed\b", re.IGNORECASE)
 
-# Mooneye Test Suite pass/fail protocol (serial bytes):
-# PASS: 03 05 08 0D 15 22  (Fibonacci numbers)
-# FAIL: 42 42 42 42 42 42
-_MOONEYE_PASS = bytes([3, 5, 8, 13, 21, 34])
-_MOONEYE_FAIL = bytes([0x42] * 6)
+
+A000_SIG = (0xDE, 0xB0, 0x61)
+A000_STATUS_RUNNING = 0x80
+A000_STATUS_PASS = 0x00
+A000_CHECK_INTERVAL = 256
 
 
 def _iter_roms(rom_dir: Path, patterns: list[str], *, exclude_subdirs: set[str]) -> list[Path]:
@@ -63,20 +64,36 @@ def _tail_append(buf: str, add: str, keep: int) -> str:
 
 
 def _detect_pass_fail(serial: str) -> str | None:
-	try:
-		b = bytes((ord(ch) & 0xFF) for ch in serial)
-		if _MOONEYE_FAIL in b:
-			return "FAIL"
-		if _MOONEYE_PASS in b:
-			return "PASS"
-	except Exception:
-		pass
-
-	if _FAIL_RE.search(serial):
+	if _FAILED_RE.search(serial):
 		return "FAIL"
-	if _PASS_RE.search(serial):
+	if _PASSED_RE.search(serial):
 		return "PASS"
 	return None
+
+
+def _poll_a000_output(gb, state: dict[str, int | bool], *, max_chars: int = 256) -> tuple[int | None, str]:
+	if not state.get("enabled", False):
+		sig = (
+			gb.bus.read_byte(0xA001) & 0xFF,
+			gb.bus.read_byte(0xA002) & 0xFF,
+			gb.bus.read_byte(0xA003) & 0xFF,
+		)
+		if sig != A000_SIG:
+			return None, ""
+		state["enabled"] = True
+		state["addr"] = 0xA004
+
+	status = gb.bus.read_byte(0xA000) & 0xFF
+	addr = int(state.get("addr", 0xA004))
+	out_chars: list[str] = []
+	for _ in range(max_chars):
+		b = gb.bus.read_byte(addr) & 0xFF
+		if b == 0:
+			break
+		out_chars.append(chr(b))
+		addr = (addr + 1) & 0xFFFF
+	state["addr"] = addr
+	return status, "".join(out_chars)
 
 
 def run_one_rom(
@@ -95,9 +112,8 @@ def run_one_rom(
 
 	try:
 		gb = GameBoy.from_rom(rom_path)
-
-		pass_regs = (3, 5, 8, 13, 21, 34)
-		fail_regs = (0x42, 0x42, 0x42, 0x42, 0x42, 0x42)
+		a000_state: dict[str, int | bool] = {"enabled": False, "addr": 0xA004}
+		next_a000_check = 0
 
 		while True:
 			if timeout_s > 0 and (time.monotonic() - start) >= timeout_s:
@@ -105,17 +121,19 @@ def run_one_rom(
 			if max_cycles > 0 and cycles >= max_cycles:
 				return TestResult(rom=rom_path, status="TIMEOUT", serial=serial, elapsed_s=time.monotonic() - start, cycles=cycles)
 
-			op = gb.bus.read_byte(gb.cpu.pc)
-			if op == 0x40:
-				r = gb.cpu.regs
-				sig = (r.b & 0xFF, r.c & 0xFF, r.d & 0xFF, r.e & 0xFF, r.h & 0xFF, r.l & 0xFF)
-				if sig == pass_regs:
-					return TestResult(rom=rom_path, status="PASS", serial=serial, elapsed_s=time.monotonic() - start, cycles=cycles)
-				if sig == fail_regs:
-					return TestResult(rom=rom_path, status="FAIL", serial=serial, elapsed_s=time.monotonic() - start, cycles=cycles)
-
 			c = gb.step()
 			cycles += int(c)
+
+			if cycles >= next_a000_check:
+				next_a000_check = cycles + A000_CHECK_INTERVAL
+				a000_status, a000_text = _poll_a000_output(gb, a000_state)
+				if a000_text:
+					if print_serial:
+						print(a000_text, end="", flush=True)
+					serial = _tail_append(serial, a000_text, serial_tail)
+				if a000_status is not None and a000_status != A000_STATUS_RUNNING:
+					status = "PASS" if a000_status == A000_STATUS_PASS else "FAIL"
+					return TestResult(rom=rom_path, status=status, serial=serial, elapsed_s=time.monotonic() - start, cycles=cycles)
 
 			out = gb.bus.io.consume_serial_output()
 			if out:
@@ -145,7 +163,7 @@ def _print_summary(results: Iterable[TestResult]) -> int:
 	error = [r for r in results if r.status == "ERROR"]
 	passed = [r for r in results if r.status == "PASS"]
 
-	print("\n=== Mooneye results ===")
+	print("\n=== Blargg results ===")
 	print(f"PASS: {len(passed)}  FAIL: {len(fail)}  TIMEOUT: {len(timeout)}  ERROR: {len(error)}")
 
 	for group_name, group in (("FAIL", fail), ("TIMEOUT", timeout), ("ERROR", error)):
@@ -161,13 +179,31 @@ def _print_summary(results: Iterable[TestResult]) -> int:
 	return 0 if (not fail and not timeout and not error) else 1
 
 
+# Available test suites
+TEST_SUITES = {
+	"cpu_instrs": "cpu_instrs",
+	"instr_timing": "instr_timing",
+	"mem_timing": "mem_timing",
+	"mem_timing-2": "mem_timing-2",
+	"dmg_sound": "dmg_sound",
+	"oam_bug": "oam_bug",
+	"halt_bug": "halt_bug.gb",
+}
+
+
 def main(argv: list[str] | None = None) -> int:
-	parser = argparse.ArgumentParser(description="Headless runner for Mooneye Test Suite ROMs")
+	parser = argparse.ArgumentParser(description="Headless runner for Blargg Test Suite ROMs")
 	parser.add_argument(
 		"--rom-dir",
 		type=Path,
 		default=None,
-		help="Directory containing Mooneye ROMs (searched recursively)",
+		help="Directory containing Blargg ROMs (searched recursively)",
+	)
+	parser.add_argument(
+		"--suite",
+		choices=list(TEST_SUITES.keys()) + ["all"],
+		default="all",
+		help="Test suite to run (default: all)",
 	)
 	parser.add_argument(
 		"--pattern",
@@ -175,37 +211,65 @@ def main(argv: list[str] | None = None) -> int:
 		default=None,
 		help="Glob pattern under --rom-dir (repeatable). Default: **/*.gb",
 	)
-	parser.add_argument("--timeout-seconds", type=float, default=20.0, help="Per-ROM timeout in seconds (default: 20)")
-	parser.add_argument("--max-cycles", type=int, default=50_000_000, help="Per-ROM max CPU cycles (default: 50,000,000)")
-	parser.add_argument("--serial-tail", type=int, default=4096, help="Keep last N serial chars for detection/debug")
+	parser.add_argument("--timeout-seconds", type=float, default=120.0, help="Per-ROM timeout in seconds (default: 120)")
+	parser.add_argument("--max-cycles", type=int, default=500_000_000, help="Per-ROM max CPU cycles (default: 500,000,000)")
+	parser.add_argument("--serial-tail", type=int, default=8192, help="Keep last N serial chars for detection/debug")
 	parser.add_argument("--print-serial", action="store_true", help="Print serial output while running")
 	parser.add_argument("--stop-on-fail", action="store_true", help="Stop at first FAIL/TIMEOUT/ERROR")
 	parser.add_argument(
 		"--exclude-subdir",
 		action="append",
 		default=None,
-		help="Skip ROMs that have this path part (repeatable). Default: manual-only, madness, utils, misc",
+		help="Skip ROMs that have this path part (repeatable). Default: source",
 	)
+	parser.add_argument("--individual", action="store_true", help="Run individual sub-tests instead of main ROMs")
 	parser.add_argument("--debug", action="store_true", help="Enable debug logging (CPU trace)")
 	parser.add_argument("-v", "--verbose", action="store_true", help="Show progress for each ROM (hidden by default)")
+	parser.add_argument("--list", action="store_true", help="List all available test suites and exit")
 	args = parser.parse_args(argv)
+
+	if args.list:
+		print("Available Blargg test suites:")
+		for name, path in TEST_SUITES.items():
+			print(f"  {name}: {path}")
+		return 0
 
 	if args.debug:
 		logging.basicConfig(level=logging.DEBUG, format="%(message)s")
 
 	rom_dir: Path | None = args.rom_dir
 	if rom_dir is None:
-		candidate = Path("test_roms") / "mooneye"
+		candidate = Path("gb-test-roms")
 		rom_dir = candidate if candidate.exists() else None
 
 	if rom_dir is None:
-		print("ERROR: --rom-dir is required (default test_roms/mooneye not found)", file=sys.stderr)
+		print("ERROR: --rom-dir is required (default gb-test-roms not found)", file=sys.stderr)
 		return 2
 
 	rom_dir = rom_dir.resolve()
-	patterns = list(args.pattern) if args.pattern else ["**/*.gb"]
-	default_excludes = {"manual-only", "madness", "utils", "misc"}
+
+	# Determine which ROMs to run
+	if args.suite == "all":
+		patterns = list(args.pattern) if args.pattern else ["**/*.gb"]
+	else:
+		suite_path = TEST_SUITES[args.suite]
+		if suite_path.endswith(".gb"):
+			# Single ROM file
+			patterns = [suite_path]
+		elif args.individual:
+			# Run individual tests
+			patterns = [f"{suite_path}/individual/*.gb"]
+		else:
+			# Run main ROM only
+			patterns = [f"{suite_path}/*.gb"]
+
+	default_excludes = {"source"}
 	exclude_subdirs = set(args.exclude_subdir) if args.exclude_subdir else default_excludes
+
+	# For --suite=all with individual, also include individual subdirs
+	if args.suite == "all" and args.individual:
+		patterns = ["**/individual/*.gb"]
+
 	roms = _iter_roms(rom_dir, patterns, exclude_subdirs=exclude_subdirs)
 	if not roms:
 		extra = f" (excluded: {sorted(exclude_subdirs)!r})" if exclude_subdirs else ""

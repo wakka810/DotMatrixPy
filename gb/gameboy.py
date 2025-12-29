@@ -17,6 +17,8 @@ class GameBoy:
 	ppu: PPU = field(init=False)
 	frame_rgb: bytearray = field(default_factory=lambda: bytearray(SCREEN_W * SCREEN_H * 3))
 	last_frame_ready: bool = False
+	_apu_cycle_remainder: int = 0
+	_ppu_cycle_remainder: int = 0
 
 	def __post_init__(self) -> None:
 		self.cpu = CPU(bus=self.bus)
@@ -38,6 +40,12 @@ class GameBoy:
 		rom_path = Path(rom_path)
 		data = rom_path.read_bytes()
 		self.bus.cartridge = Cartridge.from_bytes(data)
+		cgb_flag = self.bus.cartridge.header.cgb_flag & 0xC0
+		if cgb_flag == 0xC0:
+			raise ValueError("CGB-only ROMs are not supported by this DMG-01 emulator.")
+		self.bus.io.cgb_mode = False
+		self.bus.io.double_speed = False
+		self.bus.io.key1_prepare = False
 
 	def load_boot_rom(self, boot_rom_path: str | Path) -> None:
 		self.bus.boot_rom = Path(boot_rom_path).read_bytes()
@@ -59,8 +67,10 @@ class GameBoy:
 			io.interrupt_enable = 0x00
 			io.interrupt_flag = 0x00
 			io._div_counter = 0x0000
+			io._apu_div_ticks_pending = 0
 			
 			self.bus.apu.reset_dmg()
+			self.bus.apu.frame_sequencer = 0
 
 			self.ppu._line = 0
 			self.ppu._dot = 0
@@ -77,11 +87,14 @@ class GameBoy:
 		self.cpu.stopped = False
 
 		io = self.bus.io
+		io.double_speed = False
+		io.key1_prepare = False
 		io.interrupt_enable = 0x00
 		io.interrupt_flag = 0xE1
 
 		io._div_counter = 0xABCC
 		io.regs[0x04] = 0xAB
+		io._apu_div_ticks_pending = 0
 
 		io.regs[0x40] = 0x91
 		io.regs[0x41] = 0x85
@@ -96,6 +109,7 @@ class GameBoy:
 		io.regs[0x4B] = 0x00
 
 		self.bus.apu.reset_dmg()
+		self.bus.apu.frame_sequencer = 0
 
 		self.ppu.notify_io_write(0xFF40, io.regs[0x40])
 		self.ppu.notify_io_write(0xFF45, io.regs[0x45])
@@ -106,8 +120,29 @@ class GameBoy:
 		cycles = self.cpu.step()
 		self.bus.advance_cycles(cycles)
 		self.bus.io.tick(cycles)
-		self.bus.apu.tick(cycles)
-		self.last_frame_ready = self.ppu.tick(cycles)
+		div_ticks = self.bus.io.consume_apu_div_ticks()
+		wave_pre = self.bus.consume_apu_wave_pre_advance()
+		speed_div = 2 if self.bus.io.double_speed else 1
+		if speed_div == 1:
+			self.bus.apu.tick(cycles, div_ticks, wave_pre)
+			remaining = cycles - self.bus._ppu_pre_advance
+			if remaining < 0:
+				remaining = 0
+			self.last_frame_ready = self.ppu.tick(remaining) or self.bus._ppu_pre_frame_ready
+		else:
+			self._apu_cycle_remainder += cycles
+			apu_cycles = self._apu_cycle_remainder // speed_div
+			self._apu_cycle_remainder %= speed_div
+			wave_pre //= speed_div
+			if apu_cycles or div_ticks or wave_pre:
+				self.bus.apu.tick(apu_cycles, div_ticks, wave_pre)
+			self._ppu_cycle_remainder += cycles
+			ppu_cycles = self._ppu_cycle_remainder // speed_div
+			self._ppu_cycle_remainder %= speed_div
+			remaining = ppu_cycles - self.bus._ppu_pre_advance
+			if remaining < 0:
+				remaining = 0
+			self.last_frame_ready = self.ppu.tick(remaining) or self.bus._ppu_pre_frame_ready
 		if self.last_frame_ready:
 			self.ppu.render_frame_rgb(self.frame_rgb)
 		return cycles

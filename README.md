@@ -10,7 +10,7 @@ December 2025
 
 ## Overview
 
-DotMatrixPy is a Game Boy (DMG-01) emulator implemented in pure Python. It targets the Sharp SM83 CPU architecture. It provides cycle-accurate timing emulation. The project runs on the PyPy JIT compiler to achieve real-time execution speeds. The codebase mirrors the internal architecture of the hardware. The CPU, PPU, APU, and Bus are separated into distinct classes.
+DotMatrixPy is a Game Boy (DMG-01, DMG CPU A/B/C) emulator implemented in pure Python. It targets the Sharp SM83 CPU architecture. It provides cycle-accurate timing emulation. The project runs on the PyPy JIT compiler to achieve real-time execution speeds. The codebase mirrors the internal architecture of the hardware. The CPU, PPU, APU, and Bus are separated into distinct classes. CGB/SGB/AGB/AGS features are intentionally not supported, and CGB-only ROMs are rejected.
 
 The core logic emulates the SM83 instruction set at the machine-cycle level. The Pixel Processing Unit (PPU) implementation simulates the internal pixel fetcher and FIFO mechanism. It explicitly handles Mode 0-3 timing and STAT interrupts. This enables the correct rendering of scanline-based visual effects. It also supports precise interrupt handling required by some software.
 
@@ -29,6 +29,7 @@ The core logic emulates the SM83 instruction set at the machine-cycle level. The
 - **Input**: Keyboard input for all Game Boy buttons
 - **MBC**: Memory Bank Controller support (MBC1, MBC3, MBC5)
 - **Save Data**: Battery-backed RAM support with automatic save/load (.sav files)
+- **Hardware target**: DMG-01 only (no CGB/SGB support)
 
 ## Screenshots
 
@@ -212,7 +213,7 @@ DotMatrixPy/
 
 ## Accuracy
 
-This emulator passes the Mooneye acceptance test suite for DMG timing accuracy.
+This emulator targets DMG-01 (DMG CPU A/B/C) and passes the Mooneye acceptance tests for DMG timing accuracy.
 
 ## Performance Tips
 

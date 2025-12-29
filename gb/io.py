@@ -25,6 +25,9 @@ class IO:
     regs: bytearray = field(default_factory=lambda: bytearray(0x80))
     interrupt_flag: int = 0xE1
     interrupt_enable: int = 0x00
+    cgb_mode: bool = False
+    double_speed: bool = False
+    key1_prepare: bool = False
 
     _dpad_state: int = 0x0F
     _btn_state: int = 0x0F
@@ -32,6 +35,7 @@ class IO:
     _serial_out: list[str] = field(default_factory=list)
 
     _div_counter: int = 0
+    _apu_div_ticks_pending: int = 0
     _global_cycles: int = 0
 
     _tima_reload_pending: bool = False
@@ -74,6 +78,7 @@ class IO:
 
         self._div_counter = 0xABCC
         self.regs[0x04] = (self._div_counter >> 8) & 0xFF
+        self._apu_div_ticks_pending = 0
 
         self.regs[0x10] = 0x80
         self.regs[0x11] = 0xBF
@@ -136,6 +141,8 @@ class IO:
         self._tima_pending_value = 0
         self._tma_pending_offset = None
         self._tma_pending_value = 0
+        self.double_speed = False
+        self.key1_prepare = False
 
     def _timer_bit(self, tac: int) -> int:
         sel = tac & 0x03
@@ -151,6 +158,16 @@ class IO:
         if (tac & 0x04) == 0:
             return 0
         return 1 if (div_counter & (1 << self._timer_bit(tac))) else 0
+
+    def _apu_div_bit(self) -> int:
+        return 13 if self.double_speed else 12
+
+    def _count_apu_div_falling_edges(self, old_div: int, new_div: int) -> int:
+        bit = self._apu_div_bit()
+        period = 1 << (bit + 1)
+        if new_div >= old_div:
+            return (new_div // period) - (old_div // period)
+        return (0x10000 // period - (old_div // period)) + (new_div // period)
 
     def _tima_increment(self, *, global_cycles_before: int | None = None) -> bool:
         if self._tima_reload_pending:
@@ -245,7 +262,9 @@ class IO:
             reload_event = tima_pending_start and (step == to_reload)
             serial_event = serial_active_start and (step == to_shift)
 
+            old_div = div_counter
             div_counter = (div_counter + step) & 0xFFFF
+            self._apu_div_ticks_pending += self._count_apu_div_falling_edges(old_div, div_counter)
             processed += step
             remaining -= step
 
@@ -280,12 +299,16 @@ class IO:
 
     def _apply_div_reset(self) -> None:
         tac = self.regs[0x07] & 0x07
-        old_input = self._timer_input(tac, self._div_counter)
+        old_div = self._div_counter & 0xFFFF
+        old_input = self._timer_input(tac, old_div)
+        old_apu_bit = 1 if (old_div & (1 << self._apu_div_bit())) else 0
         self._div_counter = 0
         self.regs[0x04] = 0
         new_input = self._timer_input(tac, self._div_counter)
         if old_input == 1 and new_input == 0:
             self._tima_increment()
+        if old_apu_bit:
+            self._apu_div_ticks_pending += 1
 
     def _apply_sc_write(self) -> None:
         value = self._sc_pending_value & 0xFF
@@ -451,6 +474,48 @@ class IO:
 
         return tima & 0xFF
 
+    def _timer_irq_within(self, offset: int) -> bool:
+        offset = int(offset)
+        if offset <= 0:
+            return False
+
+        div_counter = self._div_counter & 0xFFFF
+        tima = self.regs[0x05] & 0xFF
+        tma = self.regs[0x06] & 0xFF
+        tac = self.regs[0x07] & 0x07
+        reload_pending = bool(self._tima_reload_pending)
+        reload_counter = int(self._tima_reload_counter)
+
+        timer_enabled = (tac & 0x04) != 0
+        bit = self._timer_bit(tac) if timer_enabled else 0
+
+        for _ in range(offset):
+            old_input = 0
+            if timer_enabled and not reload_pending:
+                old_input = 1 if (div_counter & (1 << bit)) else 0
+
+            div_counter = (div_counter + 1) & 0xFFFF
+
+            if reload_pending:
+                reload_counter -= 1
+                if reload_counter <= 0:
+                    return True
+                continue
+
+            new_input = 0
+            if timer_enabled:
+                new_input = 1 if (div_counter & (1 << bit)) else 0
+
+            if old_input == 1 and new_input == 0:
+                if tima == 0xFF:
+                    tima = 0x00
+                    reload_pending = True
+                    reload_counter = 4
+                else:
+                    tima = (tima + 1) & 0xFF
+
+        return False
+
     def request_interrupt(self, mask: int) -> None:
         self.interrupt_flag = (self.interrupt_flag | (mask & 0x1F) | 0xE0) & 0xFF
 
@@ -484,16 +549,28 @@ class IO:
         self._serial_out.clear()
         return out
 
+    def consume_apu_div_ticks(self) -> int:
+        ticks = self._apu_div_ticks_pending
+        self._apu_div_ticks_pending = 0
+        return ticks
+
     def read(self, address: int, offset: int = 0) -> int:
         address &= 0xFFFF
 
         if address == 0xFF0F:
-            return (self.interrupt_flag | 0xE0) & 0xFF
+            irq = self.interrupt_flag & 0x1F
+            if offset and self._timer_irq_within(offset):
+                irq |= TIMER_INTERRUPT_MASK
+            return (irq | 0xE0) & 0xFF
         if address == 0xFFFF:
             return self.interrupt_enable & 0xFF
 
         if 0xFF00 <= address <= 0xFF7F:
             off = address - 0xFF00
+            if off == 0x4D and self.cgb_mode:
+                speed = 0x80 if self.double_speed else 0x00
+                prepare = 0x01 if self.key1_prepare else 0x00
+                return 0x7E | speed | prepare
             if off in _DMG_UNUSED_OFFSETS:
                 return 0xFF
 
@@ -592,6 +669,9 @@ class IO:
 
         if 0xFF00 <= address <= 0xFF7F:
             off = address - 0xFF00
+            if off == 0x4D and self.cgb_mode:
+                self.key1_prepare = (value & 0x01) != 0
+                return
             if off in _DMG_UNUSED_OFFSETS:
                 return
 
