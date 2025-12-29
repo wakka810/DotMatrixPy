@@ -204,16 +204,10 @@ DotMatrixPy/
 │   ├── gpu.py       # VRAM management
 │   ├── io.py        # I/O registers (Timer, Joypad, Serial)
 │   └── ppu.py       # Pixel Processing Unit
-├── tests/
-│   └── run_mooneye.py  # Mooneye Test Suite runner
 ├── run_rom.py       # Main entry point
 ├── requirements.txt
 └── README.md
 ```
-
-## Accuracy
-
-This emulator targets DMG-01 (DMG CPU A/B/C) and passes the Mooneye acceptance tests for DMG timing accuracy.
 
 ## Performance Tips
 
