@@ -190,8 +190,14 @@ class CPU:
     def _read8(self, addr: int, offset: int = 0) -> int:
         return self.bus.read_byte(addr & 0xFFFF, cpu_offset=int(offset)) & 0xFF
 
+    def _read8_nodma(self, addr: int) -> int:
+        return self.bus.read_byte(addr & 0xFFFF, cpu_access=False) & 0xFF
+
     def _write8(self, addr: int, value: int, offset: int = 0) -> None:
         self.bus.write_byte(addr & 0xFFFF, value & 0xFF, cpu_offset=int(offset))
+
+    def _write8_nodma(self, addr: int, value: int) -> None:
+        self.bus.write_byte(addr & 0xFFFF, value & 0xFF, cpu_access=False)
 
     def _read16(self, addr: int) -> int:
         lo = self._read8(addr)
@@ -219,13 +225,13 @@ class CPU:
         self.regs.f = f & 0xF0
 
     def _interrupt_pending(self) -> int:
-        ie = self._read8(0xFFFF)
-        ir = self._read8(0xFF0F)
+        ie = self._read8_nodma(0xFFFF)
+        ir = self._read8_nodma(0xFF0F)
         return ie & ir & 0x1F
 
     def _service_interrupt(self) -> int:
-        ie_start = self._read8(0xFFFF)
-        ir_latch = self._read8(0xFF0F) & 0x1F
+        ie_start = self._read8_nodma(0xFFFF)
+        ir_latch = self._read8_nodma(0xFF0F) & 0x1F
         pending0 = ie_start & ir_latch & 0x1F
         if pending0 == 0 or not self.ime:
             return 0
@@ -245,14 +251,14 @@ class CPU:
         # push. If IE is overwritten by the high-byte write, it can cancel
         # or change the interrupt selection. Changes during the low-byte
         # push are too late to affect dispatch.
-        pending = (ir_latch & self._read8(0xFFFF)) & 0x1F
+        pending = (ir_latch & self._read8_nodma(0xFFFF)) & 0x1F
 
         self.sp = (self.sp - 1) & 0xFFFF
         self._write8(self.sp, lsb, offset=12)
         for i, vector in enumerate((0x40, 0x48, 0x50, 0x58, 0x60)):
             if pending & (1 << i):
-                ir = self._read8(0xFF0F)
-                self._write8(0xFF0F, ir & ~(1 << i))
+                ir = self._read8_nodma(0xFF0F)
+                self._write8_nodma(0xFF0F, ir & ~(1 << i))
                 self.pc = vector
                 return 20
 
@@ -542,11 +548,16 @@ class CPU:
         ei_apply = self._ei_pending
 
         if self.stopped:
-            if self._interrupt_pending() != 0:
-                self.stopped = False
-            else:
-                self.cycles = (self.cycles + 4) & 0xFFFFFFFF
-                return 4
+            if self.bus.io.stop_wake_requested():
+                self.bus.io.start_stop_wake_delay()
+            if self.bus.io.stop_wake_delay_active():
+                if self.bus.io.tick_stop_wake_delay(1):
+                    self.stopped = False
+                    self.bus.io.exit_stop()
+                self.cycles = (self.cycles + 1) & 0xFFFFFFFF
+                return 1
+            self.cycles = (self.cycles + 4) & 0xFFFFFFFF
+            return 4
 
         pending = self._interrupt_pending()
         if self.halted and pending != 0:
@@ -706,6 +717,7 @@ class CPU:
             io.key1_prepare = False
             return 4
         self.stopped = True
+        io.enter_stop()
         return 4
 
     def _op_halt(self, opcode: int, op_off: int) -> int:

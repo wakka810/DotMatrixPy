@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import os
 from typing import Optional, TYPE_CHECKING
 
 from .apu import APU
@@ -36,16 +37,22 @@ class BUS:
     oam: bytearray = field(default_factory=lambda: bytearray(0xA0))
 
     _cycle_counter: int = 0
+    _cpu_data_bus: int = 0xFF
 
     _dma_active: bool = False
     _dma_start: int = 0
     _dma_end: int = 0
     _dma_source: int = 0
+    _dma_progress: int = 0
     _dma_pending_start: int | None = None
     _dma_pending_source: int = 0
+    _dma_copy_in_progress: bool = False
     _ppu_pre_advance: int = 0
     _ppu_pre_frame_ready: bool = False
     _apu_pre_advance_wave: int = 0
+    _text_out_wrap_allowed: bool = field(
+        default_factory=lambda: os.environ.get("DOTMATRIXPY_TEXT_OUT_WRAP", "") == "1"
+    )
     _text_out_wrap_enabled: bool = False
     _text_out_ptr_addr: int | None = None
 
@@ -62,34 +69,57 @@ class BUS:
                 return True
         return False
 
+    def _cpu_read_return(self, value: int, *, cpu_access: bool) -> int:
+        value &= 0xFF
+        if cpu_access:
+            self._cpu_data_bus = value
+        return value
+
     def _dma_map_source(self, src: int) -> int:
         src &= 0xFFFF
         if src >= 0xE000:
             src = src & 0xDFFF
         return src & 0xFFFF
 
-    def _dma_copy(self, src: int) -> None:
-        src = self._dma_map_source(src)
-        for i in range(DMA_LEN_BYTES):
-            self.oam[i] = self.read_byte((src + i) & 0xFFFF, cpu_access=False)
+    def _dma_update_to_time(self, time: int) -> None:
+        if not self._dma_active:
+            return
+        time = int(time)
+        if time < self._dma_start:
+            return
+        elapsed = time - self._dma_start
+        if elapsed <= 0:
+            return
+        should_copy = elapsed // 4
+        if should_copy > DMA_LEN_BYTES:
+            should_copy = DMA_LEN_BYTES
+        if should_copy <= self._dma_progress:
+            return
+        src = self._dma_map_source(self._dma_source)
+        self._dma_copy_in_progress = True
+        try:
+            for i in range(self._dma_progress, should_copy):
+                self.oam[i] = self.read_byte((src + i) & 0xFFFF, cpu_access=False)
+        finally:
+            self._dma_copy_in_progress = False
+        self._dma_progress = should_copy
+        if self._dma_progress >= DMA_LEN_BYTES:
+            self._dma_active = False
 
     def _dma_start_at(self, time: int, src: int) -> None:
         self._dma_active = True
         self._dma_start = int(time)
         self._dma_end = self._dma_start + DMA_LEN_CYCLES
         self._dma_source = src & 0xFFFF
-        self._dma_copy(self._dma_source)
+        self._dma_progress = 0
 
     def _sync_dma_to_time(self, time: int) -> None:
         time = int(time)
-        if self._dma_active and self._dma_end <= time:
-            self._dma_active = False
         if self._dma_pending_start is not None and self._dma_pending_start <= time:
             self._dma_start_at(self._dma_pending_start, self._dma_pending_source)
             self._dma_pending_start = None
             self._dma_pending_source = 0
-            if self._dma_end <= time:
-                self._dma_active = False
+        self._dma_update_to_time(time)
 
     def _schedule_dma(self, write_time: int, value: int) -> None:
         src = (value & 0xFF) << 8
@@ -104,6 +134,8 @@ class BUS:
         return self.ppu.oam_bug_row(offset)
 
     def _maybe_enable_text_out_wrap(self) -> None:
+        if not self._text_out_wrap_allowed:
+            return
         if self._text_out_wrap_enabled:
             return
         if self.cartridge is None:
@@ -318,69 +350,81 @@ class BUS:
             start = event_time
 
         self._cycle_counter = end
+        if not self._dma_copy_in_progress:
+            self._sync_dma_to_time(end)
 
     def read_byte(self, address: int, *, cpu_offset: int = 0, cpu_access: bool = True) -> int:
         address &= 0xFFFF
         access_time = self._cycle_counter + int(cpu_offset)
 
-        if cpu_access and self._dma_blocked_at(access_time) and 0xFE00 <= address <= 0xFE9F:
-            return 0xFF
+        if not self._dma_copy_in_progress:
+            self._sync_dma_to_time(access_time)
+
+        if cpu_access and self._dma_blocked_at(access_time):
+            if not (0xFF80 <= address <= 0xFFFE):
+                return self._cpu_data_bus & 0xFF
 
         if 0x0000 <= address <= 0x7FFF:
             if self.boot_rom is not None and address < 0x100:
                 if (self.io.regs[0x50] & 1) == 0:
                     if address < len(self.boot_rom):
-                        return self.boot_rom[address]
-                    return 0xFF
+                        return self._cpu_read_return(self.boot_rom[address], cpu_access=cpu_access)
+                    return self._cpu_read_return(0xFF, cpu_access=cpu_access)
 
             if self.cartridge is None:
-                return 0xFF
-            return self.cartridge.read_rom(address)
+                return self._cpu_read_return(0xFF, cpu_access=cpu_access)
+            return self._cpu_read_return(self.cartridge.read_rom(address), cpu_access=cpu_access)
 
         if VRAM_BEGIN <= address <= VRAM_END:
             if self.ppu is not None and not self.ppu.peek_vram_accessible(cpu_offset):
-                return 0xFF
-            return self.gpu.read_vram(address - VRAM_BEGIN)
+                return self._cpu_read_return(0xFF, cpu_access=cpu_access)
+            return self._cpu_read_return(self.gpu.read_vram(address - VRAM_BEGIN), cpu_access=cpu_access)
 
         if 0xA000 <= address <= 0xBFFF:
             if self.cartridge is None:
-                return 0xFF
-            return self.cartridge.read_ram(address - 0xA000)
+                return self._cpu_read_return(0xFF, cpu_access=cpu_access)
+            return self._cpu_read_return(self.cartridge.read_ram(address - 0xA000), cpu_access=cpu_access)
 
         if 0xC000 <= address <= 0xDFFF:
-            return self.wram[address - 0xC000] & 0xFF
+            return self._cpu_read_return(self.wram[address - 0xC000], cpu_access=cpu_access)
 
         if 0xE000 <= address <= 0xFDFF:
-            return self.wram[address - 0xE000] & 0xFF
+            return self._cpu_read_return(self.wram[address - 0xE000], cpu_access=cpu_access)
 
         if 0xFE00 <= address <= 0xFE9F:
             if self.ppu is not None and not self.ppu.peek_oam_accessible(cpu_offset):
-                return 0xFF
-            return self.oam[address - 0xFE00] & 0xFF
+                return self._cpu_read_return(0xFF, cpu_access=cpu_access)
+            return self._cpu_read_return(self.oam[address - 0xFE00], cpu_access=cpu_access)
 
         if address == 0xFF41 and self.ppu is not None:
-            return self.ppu.peek_stat(cpu_offset)
+            return self._cpu_read_return(self.ppu.peek_stat(cpu_offset), cpu_access=cpu_access)
         if address == 0xFF44 and self.ppu is not None:
-            return self.ppu.peek_ly(cpu_offset)
+            return self._cpu_read_return(self.ppu.peek_ly(cpu_offset), cpu_access=cpu_access)
 
         if 0xFF30 <= address <= 0xFF3F:
             self._apu_advance_wave_to_offset(cpu_offset)
-            return self.apu.read_wave_ram(address - 0xFF30, cgb_mode=self.io.cgb_mode)
+            return self._cpu_read_return(
+                self.apu.read_wave_ram(address - 0xFF30, cgb_mode=self.io.cgb_mode),
+                cpu_access=cpu_access,
+            )
         if 0xFF10 <= address <= 0xFF3F:
-            return self.apu.read_register(address - 0xFF00)
+            return self._cpu_read_return(self.apu.read_register(address - 0xFF00), cpu_access=cpu_access)
 
         if (0xFF00 <= address <= 0xFF7F) or address in (0xFF0F, 0xFFFF):
-            return self.io.read(address, offset=cpu_offset)
+            return self._cpu_read_return(self.io.read(address, offset=cpu_offset), cpu_access=cpu_access)
 
         if 0xFF80 <= address <= 0xFFFE:
-            return self.hram[address - 0xFF80] & 0xFF
+            return self._cpu_read_return(self.hram[address - 0xFF80], cpu_access=cpu_access)
 
-        return 0xFF
+        return self._cpu_read_return(0xFF, cpu_access=cpu_access)
 
     def write_byte(self, address: int, value: int, *, cpu_offset: int = 0, cpu_access: bool = True) -> None:
         address &= 0xFFFF
         value &= 0xFF
         access_time = self._cycle_counter + int(cpu_offset)
+
+        if cpu_access:
+            self._cpu_data_bus = value & 0xFF
 
         if (
             self._text_out_wrap_enabled
@@ -397,8 +441,12 @@ class BUS:
                     if address == ((ptr + 1) & 0xFFFF) or address == ptr:
                         address = 0xA000 + ((address - 0xA000) & 0x1FFF)
 
-        if cpu_access and self._dma_blocked_at(access_time) and 0xFE00 <= address <= 0xFE9F:
-            return
+        if not self._dma_copy_in_progress:
+            self._sync_dma_to_time(access_time)
+
+        if cpu_access and self._dma_blocked_at(access_time):
+            if not (0xFF80 <= address <= 0xFFFE):
+                return
 
         if 0x0000 <= address <= 0x7FFF:
             if self.cartridge is not None:
@@ -452,7 +500,7 @@ class BUS:
 
         if (0xFF00 <= address <= 0xFF7F) or address in (0xFF0F, 0xFFFF):
             self.io.write(address, value, offset=cpu_offset)
-            if self.ppu is not None and address in (0xFF40, 0xFF41, 0xFF44, 0xFF45):
+            if self.ppu is not None and address in (0xFF40, 0xFF41, 0xFF45):
                 if cpu_access:
                     self._ppu_advance_to_offset(cpu_offset)
                 self.ppu.notify_io_write(address, value)

@@ -57,6 +57,10 @@ class IO:
     _tima_pending_value: int = 0
     _tma_pending_offset: int | None = None
     _tma_pending_value: int = 0
+    _stop_mode: bool = False
+    _stop_wake_delay: int = 0
+
+    _STOP_WAKE_DELAY_CYCLES: int = 217
 
     def __post_init__(self) -> None:
         if len(self.regs) != 0x80:
@@ -143,6 +147,36 @@ class IO:
         self._tma_pending_value = 0
         self.double_speed = False
         self.key1_prepare = False
+        self._stop_mode = False
+        self._stop_wake_delay = 0
+
+    def enter_stop(self) -> None:
+        self._apply_div_reset()
+        self._stop_mode = True
+        self._stop_wake_delay = 0
+
+    def exit_stop(self) -> None:
+        self._stop_mode = False
+        self._stop_wake_delay = 0
+
+    def start_stop_wake_delay(self) -> None:
+        if self._stop_wake_delay <= 0:
+            self._stop_wake_delay = int(self._STOP_WAKE_DELAY_CYCLES)
+
+    def tick_stop_wake_delay(self, cycles: int) -> bool:
+        if self._stop_wake_delay <= 0:
+            return True
+        self._stop_wake_delay -= int(cycles)
+        if self._stop_wake_delay <= 0:
+            self._stop_wake_delay = 0
+            return True
+        return False
+
+    def stop_wake_delay_active(self) -> bool:
+        return self._stop_wake_delay > 0
+
+    def stop_wake_requested(self) -> bool:
+        return (self._dpad_state & 0x0F) != 0x0F or (self._btn_state & 0x0F) != 0x0F
 
     def _timer_bit(self, tac: int) -> int:
         sel = tac & 0x03
@@ -383,6 +417,8 @@ class IO:
     def tick(self, cycles: int) -> None:
         cycles = int(cycles)
         if cycles <= 0:
+            return
+        if self._stop_mode:
             return
 
         remaining = cycles

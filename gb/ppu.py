@@ -185,15 +185,6 @@ class PPU:
             self._lyc = value
             if self._enabled:
                 self._update_coincidence(immediate=True)
-        elif addr == 0xFF44:
-            if self._enabled:
-                self._line = 0
-                self._dot = 0
-                self._mode = 2
-                self._window_line = 0
-                self._prepare_visible_line()
-                self._update_ly_register()
-                self._update_coincidence(immediate=True)
 
     def tick(self, t_cycles: int) -> bool:
         t_cycles = int(t_cycles)

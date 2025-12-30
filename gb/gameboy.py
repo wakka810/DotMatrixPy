@@ -118,6 +118,8 @@ class GameBoy:
 
 	def step(self) -> int:
 		cycles = self.cpu.step()
+		if self.cpu.stopped:
+			return cycles
 		self.bus.advance_cycles(cycles)
 		self.bus.io.tick(cycles)
 		div_ticks = self.bus.io.consume_apu_div_ticks()
