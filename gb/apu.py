@@ -414,8 +414,6 @@ class APU:
             return
         if not self.ch3.enabled:
             return
-        # DMG retrigger corruption happens when the channel is about to read the next byte.
-        # Use the remaining timer (time to next read) to model this prefetch window.
         if self.ch3.timer > 2:
             return
         access_pos = (self.ch3.sample_pos + 1) & 31

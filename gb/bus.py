@@ -150,7 +150,6 @@ class BUS:
             return
         if sig != (0xDE, 0xB0, 0x61):
             return
-        # text_out_addr lives in WRAM for this test framework; prefer the known slot.
         candidate = 0xD883
         idx = candidate - 0xC000
         if 0 <= idx <= (len(self.wram) - 2):
@@ -160,7 +159,6 @@ class BUS:
                 self._text_out_ptr_addr = candidate
                 self._text_out_wrap_enabled = True
                 return
-        # Fallback: locate text_out_addr in WRAM by finding the initial pointer value (0xA004).
         target_lo = 0x04
         target_hi = 0xA0
         wram = self.wram
@@ -235,7 +233,6 @@ class BUS:
             self._oam_set_word(base + i, words[i])
 
     def _oam_bug_apply_read(self, row: int) -> None:
-        """READ corruption: row 0 is protected."""
         row_idx = int(row) % 20
         if row_idx == 0:
             return
@@ -251,7 +248,6 @@ class BUS:
         self._oam_set_row_words(row_idx, row_words)
 
     def _oam_bug_apply_write(self, row: int) -> None:
-        """WRITE corruption: row 0 is protected."""
         row_idx = int(row) % 20
         if row_idx == 0:
             return
@@ -267,37 +263,24 @@ class BUS:
         self._oam_set_row_words(row_idx, row_words)
 
     def _oam_bug_apply_read_incdec(self, row: int) -> None:
-        """READ during inc/dec (READ_INCDEC) corruption per Pan Docs.
-        
-        STEP A: Only if row is 4-18 (skip for 0-3 and 19):
-            Modify row-1's word0, then copy row-1 to row-2 and row.
-        STEP B: Always apply normal READ corruption at the end.
-        """
         row_idx = int(row) % 20
         if row_idx == 0:
             return
-        
-        # STEP A: Only for rows 4-18
         if 4 <= row_idx <= 18:
             r2 = (row_idx - 2) % 20
             r1 = (row_idx - 1) % 20
-            # Read fresh values
             r2_words = self._oam_row_words(r2)
             r1_words = self._oam_row_words(r1)
             row_words = self._oam_row_words(row_idx)
-            a = r2_words[0]  # word0 of row-2
-            b = r1_words[0]  # word0 of row-1 (this gets corrupted)
-            c = row_words[0]  # word0 of current row
-            d = r1_words[2]  # word2 of row-1
+            a = r2_words[0]
+            b = r1_words[0]
+            c = row_words[0]
+            d = r1_words[2]
             new_b = ((b & (a | c | d)) | (a & c & d)) & 0xFFFF
             r1_words[0] = new_b
-            # Write updated row-1 back first
             self._oam_set_row_words(r1, r1_words)
-            # Then copy row-1 to current row and row-2
             self._oam_set_row_words(row_idx, r1_words)
             self._oam_set_row_words(r2, r1_words)
-        
-        # STEP B: Always apply normal READ corruption
         self._oam_bug_apply_read(row_idx)
 
     def oam_bug_access(self, addr: int, offset: int, kind: int) -> None:

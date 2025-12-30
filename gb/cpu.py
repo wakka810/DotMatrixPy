@@ -247,10 +247,6 @@ class CPU:
         self.sp = (self.sp - 1) & 0xFFFF
         self._write8(self.sp, msb, offset=8)
 
-        # IF is latched at service start, but IE is sampled after the first
-        # push. If IE is overwritten by the high-byte write, it can cancel
-        # or change the interrupt selection. Changes during the low-byte
-        # push are too late to affect dispatch.
         pending = (ir_latch & self._read8_nodma(0xFFFF)) & 0x1F
 
         self.sp = (self.sp - 1) & 0xFFFF
@@ -565,6 +561,7 @@ class CPU:
 
         int_cycles = self._service_interrupt()
         if int_cycles:
+            self._halt_bug = False
             self.cycles = (self.cycles + int_cycles) & 0xFFFFFFFF
             return int_cycles
 
@@ -698,9 +695,14 @@ class CPU:
         return self._op_table[opcode](opcode, op_off)
 
     def _op_unimplemented(self, opcode: int, op_off: int) -> int:
-        print(f"[CPU] Invalid opcode 0x{opcode:02X} at PC=0x{self.pc:04X} "
-              f"A={self.regs.a:02X} BC={self.regs.get_bc():04X} "
-              f"DE={self.regs.get_de():04X} HL={self.regs.get_hl():04X} SP={self.sp:04X}")
+        pc = self.pc & 0xFFFF
+        sp = self.sp & 0xFFFF
+        print(
+            f"[CPU] Invalid opcode 0x{opcode:02X} at PC=0x{pc:04X} "
+            f"A={self.regs.a:02X} BC={self.regs.get_bc():04X} "
+            f"DE={self.regs.get_de():04X} HL={self.regs.get_hl():04X} "
+            f"SP={sp:04X}"
+        )
         self.pc = (self.pc + (op_off & 1)) & 0xFFFF
         return 4
 
@@ -1060,7 +1062,6 @@ class CPU:
         hi = self._read8(sp1, offset=8)
         sp2 = (sp1 + 1) & 0xFFFF
         self.sp = sp2
-        # Also check sp1 for cases where sp0 is outside OAM range
         self.bus.oam_bug_access(sp1, 4, OAM_BUG_READ)
         v = ((hi << 8) | lo) & 0xFFFF
         if qq == 0:
