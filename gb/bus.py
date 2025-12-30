@@ -116,6 +116,8 @@ class BUS:
     def _sync_dma_to_time(self, time: int) -> None:
         time = int(time)
         if self._dma_pending_start is not None and self._dma_pending_start <= time:
+            if self._dma_active:
+                self._dma_update_to_time(self._dma_pending_start)
             self._dma_start_at(self._dma_pending_start, self._dma_pending_source)
             self._dma_pending_start = None
             self._dma_pending_source = 0
@@ -323,6 +325,8 @@ class BUS:
             if event_time is None:
                 break
 
+            if not self._dma_copy_in_progress:
+                self._dma_update_to_time(event_time)
             if event == "start":
                 self._dma_start_at(event_time, self._dma_pending_source)
                 self._dma_pending_start = None
@@ -336,6 +340,10 @@ class BUS:
         if not self._dma_copy_in_progress:
             self._sync_dma_to_time(end)
 
+    def _dma_blocks_address(self, address: int) -> bool:
+        address &= 0xFFFF
+        return 0xFE00 <= address <= 0xFE9F
+
     def read_byte(self, address: int, *, cpu_offset: int = 0, cpu_access: bool = True) -> int:
         address &= 0xFFFF
         access_time = self._cycle_counter + int(cpu_offset)
@@ -344,8 +352,8 @@ class BUS:
             self._sync_dma_to_time(access_time)
 
         if cpu_access and self._dma_blocked_at(access_time):
-            if not (0xFF80 <= address <= 0xFFFE):
-                return self._cpu_data_bus & 0xFF
+            if self._dma_blocks_address(address):
+                return self._cpu_read_return(0xFF, cpu_access=cpu_access)
 
         if 0x0000 <= address <= 0x7FFF:
             if self.boot_rom is not None and address < 0x100:
@@ -428,7 +436,7 @@ class BUS:
             self._sync_dma_to_time(access_time)
 
         if cpu_access and self._dma_blocked_at(access_time):
-            if not (0xFF80 <= address <= 0xFFFE):
+            if self._dma_blocks_address(address):
                 return
 
         if 0x0000 <= address <= 0x7FFF:

@@ -970,14 +970,16 @@ class CPU:
 
     def _op_add_sp_r8(self, opcode: int, op_off: int) -> int:
         inc2 = 1 + (op_off & 1)
-        s = self._imm8s(op_off) & 0xFFFF
+        raw = self._read8((self.pc + op_off) & 0xFFFF, offset=7)
+        s = (raw - 0x100 if (raw & 0x80) else raw) & 0xFFFF
         self._add_sp_r8(s)
         self.pc = (self.pc + inc2) & 0xFFFF
         return 16
 
     def _op_ld_hl_sp_r8(self, opcode: int, op_off: int) -> int:
         inc2 = 1 + (op_off & 1)
-        s = self._imm8s(op_off) & 0xFFFF
+        raw = self._read8((self.pc + op_off) & 0xFFFF, offset=7)
+        s = (raw - 0x100 if (raw & 0x80) else raw) & 0xFFFF
         self._ld_hl_sp_r8(s)
         self.pc = (self.pc + inc2) & 0xFFFF
         return 12
@@ -1003,31 +1005,37 @@ class CPU:
         return 4
 
     def _op_reti(self, opcode: int, op_off: int) -> int:
-        self.pc = self.pop_u16(offset_lo=4, offset_hi=8)
+        self.pc = self.pop_u16(offset_lo=7, offset_hi=11)
         self.ime = True
         return 16
 
     def _op_ret(self, opcode: int, op_off: int) -> int:
-        self.pc = self.pop_u16(offset_lo=4, offset_hi=8)
+        self.pc = self.pop_u16(offset_lo=7, offset_hi=11)
         return 16
 
     def _op_ret_cc(self, opcode: int, op_off: int) -> int:
         cc = (opcode >> 3) & 3
         if self._cond(cc):
-            self.pc = self.pop_u16(offset_lo=8, offset_hi=12)
+            self.pc = self.pop_u16(offset_lo=11, offset_hi=15)
             return 20
         self.pc = (self.pc + (op_off & 1)) & 0xFFFF
         return 8
 
     def _op_jp_a16(self, opcode: int, op_off: int) -> int:
-        addr = self._imm16(op_off)
+        base = (self.pc + op_off) & 0xFFFF
+        lo = self._read8(base, offset=7)
+        hi = self._read8((base + 1) & 0xFFFF, offset=11)
+        addr = ((hi << 8) | lo) & 0xFFFF
         self.pc = addr
         return 16
 
     def _op_jp_cc_a16(self, opcode: int, op_off: int) -> int:
         inc3 = 2 + (op_off & 1)
         cc = (opcode >> 3) & 3
-        addr = self._imm16(op_off)
+        base = (self.pc + op_off) & 0xFFFF
+        lo = self._read8(base, offset=7)
+        hi = self._read8((base + 1) & 0xFFFF, offset=11)
+        addr = ((hi << 8) | lo) & 0xFFFF
         if self._cond(cc):
             self.pc = addr
             return 16
@@ -1036,7 +1044,10 @@ class CPU:
 
     def _op_call_a16(self, opcode: int, op_off: int) -> int:
         inc3 = 2 + (op_off & 1)
-        addr = self._imm16(op_off)
+        base = (self.pc + op_off) & 0xFFFF
+        lo = self._read8(base, offset=7)
+        hi = self._read8((base + 1) & 0xFFFF, offset=11)
+        addr = ((hi << 8) | lo) & 0xFFFF
         self.push_u16((self.pc + inc3) & 0xFFFF, offset_hi=16, offset_lo=20)
         self.pc = addr
         return 24
@@ -1044,7 +1055,10 @@ class CPU:
     def _op_call_cc_a16(self, opcode: int, op_off: int) -> int:
         inc3 = 2 + (op_off & 1)
         cc = (opcode >> 3) & 3
-        addr = self._imm16(op_off)
+        base = (self.pc + op_off) & 0xFFFF
+        lo = self._read8(base, offset=7)
+        hi = self._read8((base + 1) & 0xFFFF, offset=11)
+        addr = ((hi << 8) | lo) & 0xFFFF
         if self._cond(cc):
             self.push_u16((self.pc + inc3) & 0xFFFF, offset_hi=16, offset_lo=20)
             self.pc = addr
