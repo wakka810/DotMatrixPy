@@ -12,12 +12,25 @@ def main() -> int:
 	parser.add_argument("--fps", type=int, default=60, help="FPS cap (default: 60)")
 	parser.add_argument("--headless", action="store_true", help="Run without a window")
 	parser.add_argument("--boot-rom", type=Path, help="Path to boot ROM file")
+	parser.add_argument(
+		"--custom-color", nargs="*", metavar="HEX",
+		help="Enable custom color palette. Without args: classic GB green. With 4 hex colors: custom palette (darkest to lightest, e.g., #081820 #346856 #88c070 #e0f8d0)"
+	)
 	args = parser.parse_args()
 
-	from gb.gameboy import GameBoy
+	from gb.gameboy import DEFAULT_PALETTE_HEX, GameBoy
 	from gb.ppu import SCREEN_H, SCREEN_W
 
 	gb = GameBoy.from_rom(args.rom, boot_rom=args.boot_rom)
+
+	if args.custom_color is not None:
+		if len(args.custom_color) == 0:
+			gb.set_custom_palette_hex(DEFAULT_PALETTE_HEX)
+		elif len(args.custom_color) == 4:
+			palette = list(reversed(args.custom_color))
+			gb.set_custom_palette_hex(palette)
+		else:
+			parser.error("--custom-color requires exactly 0 or 4 hex color arguments")
 
 	save_path = gb.bus.cartridge.get_save_path(args.rom)
 	gb.bus.cartridge.load_ram(save_path)

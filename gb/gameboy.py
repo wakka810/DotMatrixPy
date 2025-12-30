@@ -160,3 +160,26 @@ class GameBoy:
 			if out:
 				print(out, end="", flush=True)
 		return False
+
+	def set_custom_palette(self, colors: list[tuple[int, int, int]]) -> None:
+		if len(colors) != 4:
+			raise ValueError("Palette must have exactly 4 colors")
+		self.ppu.custom_palette = colors
+
+	def set_custom_palette_hex(self, hex_colors: list[str]) -> None:
+		if len(hex_colors) != 4:
+			raise ValueError("Palette must have exactly 4 colors")
+		colors = []
+		for hex_color in hex_colors:
+			hex_color = hex_color.lstrip('#')
+			if len(hex_color) != 6:
+				raise ValueError(f"Invalid hex color: {hex_color}")
+			r = int(hex_color[0:2], 16)
+			g = int(hex_color[2:4], 16)
+			b = int(hex_color[4:6], 16)
+			colors.append((r, g, b))
+		self.ppu.custom_palette = colors
+
+
+DEFAULT_PALETTE_HEX = ["#e0f8d0", "#88c070", "#346856", "#081820"]
+

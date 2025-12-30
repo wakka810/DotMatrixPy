@@ -174,6 +174,8 @@ class PPU:
 
     framebuffer: bytearray = field(default_factory=lambda: bytearray(SCREEN_W * SCREEN_H))
 
+    custom_palette: List[Tuple[int, int, int]] | None = None
+
     def notify_io_write(self, addr: int, value: int) -> None:
         addr &= 0xFFFF
         value &= 0xFF
@@ -531,17 +533,31 @@ class PPU:
             raise ValueError("out_rgb buffer too small")
 
         if not self._enabled or self._blank_frame:
-            out_rgb[:] = bytes([0xFF]) * (SCREEN_W * SCREEN_H * 3)
+            if self.custom_palette:
+                r, g, b = self.custom_palette[0]
+                out_rgb[:] = bytes([r, g, b] * (SCREEN_W * SCREEN_H))
+            else:
+                out_rgb[:] = bytes([0xFF]) * (SCREEN_W * SCREEN_H * 3)
             return
 
-        shade_to_rgb = (255, 170, 85, 0)
-        p = 0
-        for s in self.framebuffer:
-            g = shade_to_rgb[s & 3]
-            out_rgb[p] = g
-            out_rgb[p + 1] = g
-            out_rgb[p + 2] = g
-            p += 3
+        if self.custom_palette:
+            p = 0
+            for s in self.framebuffer:
+                shade = s & 3
+                r, g, b = self.custom_palette[shade]
+                out_rgb[p] = r
+                out_rgb[p + 1] = g
+                out_rgb[p + 2] = b
+                p += 3
+        else:
+            shade_to_rgb = (255, 170, 85, 0)
+            p = 0
+            for s in self.framebuffer:
+                g = shade_to_rgb[s & 3]
+                out_rgb[p] = g
+                out_rgb[p + 1] = g
+                out_rgb[p + 2] = g
+                p += 3
 
     def _handle_lcdc_change(self, lcdc: int) -> None:
         lcd_enabled = (lcdc & 0x80) != 0

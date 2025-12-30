@@ -29,6 +29,7 @@ The core logic emulates the SM83 instruction set at the machine-cycle level. The
 - **Input**: Keyboard input for all Game Boy buttons
 - **MBC**: Memory Bank Controller support (MBC1, MBC3, MBC5)
 - **Save Data**: Battery-backed RAM support with automatic save/load (.sav files)
+- **Custom Palette**: Customizable color palette with classic Game Boy green option
 - **Hardware target**: DMG-01 only (no CGB/SGB support)
 
 ## Screenshots
@@ -142,10 +143,14 @@ python run_rom.py path/to/rom.gb
 python run_rom.py --help
 
 Options:
-  --scale SCALE       Window scale (default: 3)
-  --fps FPS           FPS cap (default: 60)
-  --headless          Run without a window
-  --boot-rom PATH     Path to boot ROM file (optional)
+  --scale SCALE         Window scale (default: 3)
+  --fps FPS             FPS cap (default: 60)
+  --headless            Run without a window
+  --boot-rom PATH       Path to boot ROM file (optional)
+  --custom-color [HEX]  Enable custom color palette
+                        - Without args: classic GB green palette
+                        - With 4 hex colors: custom palette (darkest to lightest)
+                        Example: --custom-color #081820 #346856 #88c070 #e0f8d0
 ```
 
 ### Examples
@@ -159,6 +164,12 @@ python run_rom.py --scale 4 games/pokemon.gb
 
 # Run with PyPy for better performance (recommended)
 pypy3 run_rom.py games/zelda.gb
+
+# Use classic Game Boy green palette
+python run_rom.py --custom-color games/tetris.gb
+
+# Use custom color palette (darkest to lightest)
+python run_rom.py --custom-color "#081820" "#346856" "#88c070" "#e0f8d0" games/tetris.gb
 ```
 
 ## Controller
@@ -221,5 +232,4 @@ MIT License
 ## Acknowledgments
 
 - [Pan Docs](https://gbdev.io/pandocs/) - Game Boy technical reference
-- [Mooneye Test Suite](https://github.com/Gekkio/mooneye-test-suite) - Accuracy testing
 - [RGBDS](https://rgbds.gbdev.io/) - Game Boy development toolchain
