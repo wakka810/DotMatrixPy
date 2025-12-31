@@ -45,10 +45,10 @@ The core logic emulates the SM83 instruction set at the machine-cycle level. The
       <b>Boot ROM</b>
     </td>
     <td align="center" width="33%">
-      <a href="https://tangramgames.itch.io/tobu-tobu-girl-deluxe">
+      <a href="https://tangramgames.dk/tobutobugirl/">
         <img src="https://github.com/user-attachments/assets/1ef81d81-bf4a-41e3-a67b-86830d4b8cf7" width="420" alt="Tobu Tobu Girl Deluxe - emulator test screenshot" />
       </a><br />
-      <b><a href="https://tangramgames.itch.io/tobu-tobu-girl-deluxe">Tobu Tobu Girl Deluxe</a></b>
+      <b><a href="https://tangramgames.itch.io/tobu-tobu-girl-deluxe">Tobu Tobu Girl</a></b>
     </td>
     <td align="center" width="33%">
       <a href="https://izma.itch.io/deadeus">
