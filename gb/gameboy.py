@@ -69,7 +69,7 @@ class GameBoy:
 			io._div_counter = 0x0000
 			io._apu_div_ticks_pending = 0
 			
-			self.bus.apu.reset_dmg()
+			self.bus.apu.reset_dmg(boot=True)
 			self.bus.apu.frame_sequencer = 0
 
 			self.ppu._line = 0
@@ -108,7 +108,7 @@ class GameBoy:
 		io.regs[0x4A] = 0x00
 		io.regs[0x4B] = 0x00
 
-		self.bus.apu.reset_dmg()
+		self.bus.apu.reset_dmg(boot=False)
 		self.bus.apu.frame_sequencer = 0
 
 		self.ppu.notify_io_write(0xFF40, io.regs[0x40])

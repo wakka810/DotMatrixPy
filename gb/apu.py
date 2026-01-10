@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 
 SAMPLE_RATE = 44100
 CPU_CLOCK = 4194304
-CYCLES_PER_SAMPLE = CPU_CLOCK / SAMPLE_RATE
 
 DUTY_WAVEFORMS = (
     (0, 0, 0, 0, 0, 0, 0, 1),
@@ -232,33 +232,134 @@ class APU:
     sample_cycles: float = 0.0
     audio_buffer: list[float] = field(default_factory=list)
     buffer_size: int = 2048
+    sample_rate: int = SAMPLE_RATE
+    cycles_per_sample: float = field(init=False)
+    _dc_coeff: float = field(init=False)
+    _dc_prev_left: float = 0.0
+    _dc_prev_right: float = 0.0
+    _dc_out_left: float = 0.0
+    _dc_out_right: float = 0.0
 
-    def reset_dmg(self) -> None:
+    def __post_init__(self) -> None:
+        self.set_sample_rate(self.sample_rate)
+
+    def reset_dmg(self, *, boot: bool = False) -> None:
+        self._reset_audio_state()
+        if boot:
+            self.enabled = False
+            self.frame_sequencer = 0
+            self.ch1 = SquareChannel()
+            self.ch2 = SquareChannel()
+            self.ch3 = WaveChannel()
+            self.ch4 = NoiseChannel()
+            self.left_volume = 0
+            self.right_volume = 0
+            self.vin_left = False
+            self.vin_right = False
+            self.panning = 0x00
+            return
+
         self.enabled = True
         self.frame_sequencer = 0
-        self.ch1.enabled = True
-        self.ch1.dac_enabled = True
+
+        self.ch1 = SquareChannel()
+        self.ch2 = SquareChannel()
+        self.ch3 = WaveChannel()
+        self.ch4 = NoiseChannel()
+
+        self.ch1.sweep_period = 0
+        self.ch1.sweep_negate = False
+        self.ch1.sweep_shift = 0
         self.ch1.duty = 2
-        self.ch1.length_counter = 0
+        self.ch1.length_counter = 1
+        self.ch1.length_enabled = True
         self.ch1.volume_init = 0x0F
         self.ch1.envelope_add = False
         self.ch1.envelope_period = 3
-        self.ch1.volume = 0x0F
+        self.ch1.envelope_timer = self.ch1.envelope_period or 8
+        self.ch1.dac_enabled = True
+        self.ch1.frequency = 0x7FF
+        self.ch1.timer = (2048 - self.ch1.frequency) * 4
+        self.ch1.duty_pos = 0
+        self.ch1.volume = self.ch1.volume_init
+        self.ch1.sweep_shadow = self.ch1.frequency
+        self.ch1.sweep_timer = self.ch1.sweep_period if self.ch1.sweep_period else 8
+        self.ch1.sweep_enabled = False
+        self.ch1.sweep_negate_used = False
+        self.ch1.enabled = True
 
-        self.ch2.enabled = False
-        self.ch2.dac_enabled = False
         self.ch2.duty = 0
-        self.ch2.length_counter = 0
+        self.ch2.length_counter = 1
+        self.ch2.length_enabled = True
+        self.ch2.volume_init = 0x00
+        self.ch2.envelope_add = False
+        self.ch2.envelope_period = 0
+        self.ch2.envelope_timer = 0
+        self.ch2.dac_enabled = False
+        self.ch2.frequency = 0x7FF
+        self.ch2.timer = (2048 - self.ch2.frequency) * 4
+        self.ch2.duty_pos = 0
+        self.ch2.volume = 0
+        self.ch2.enabled = False
 
-        self.ch3.enabled = False
         self.ch3.dac_enabled = False
+        self.ch3.enabled = False
+        self.ch3.length_counter = 1
+        self.ch3.length_enabled = True
+        self.ch3.volume_code = 0
+        self.ch3.frequency = 0x7FF
+        self.ch3.timer = (2048 - self.ch3.frequency) * 2 + 6
+        self.ch3.sample_pos = 0
+        self.ch3.sample_buffer = 0
+        self.ch3.access_timer = 0xFFFF
+        self.ch3.last_access_pos = None
 
-        self.ch4.enabled = False
+        self.ch4.length_counter = 1
+        self.ch4.length_enabled = True
+        self.ch4.volume_init = 0x00
+        self.ch4.envelope_add = False
+        self.ch4.envelope_period = 0
+        self.ch4.envelope_timer = 0
+        self.ch4.clock_shift = 0
+        self.ch4.width_mode = 0
+        self.ch4.divisor_code = 0
+        divisor = (1, 2, 4, 6, 8, 10, 12, 14)[self.ch4.divisor_code]
+        self.ch4.timer = divisor << (self.ch4.clock_shift + 2)
+        self.ch4.lfsr = 0x7FFF
         self.ch4.dac_enabled = False
+        self.ch4.enabled = False
 
         self.left_volume = 7
         self.right_volume = 7
+        self.vin_left = False
+        self.vin_right = False
         self.panning = 0xF3
+
+    def set_sample_rate(self, rate: int) -> None:
+        rate = int(rate)
+        if rate <= 0:
+            return
+        self.sample_rate = rate
+        self.cycles_per_sample = CPU_CLOCK / float(rate)
+        cutoff = 5.0
+        self._dc_coeff = math.exp(-2.0 * math.pi * cutoff / float(rate))
+
+    def _reset_audio_state(self) -> None:
+        self.sample_cycles = 0.0
+        self.audio_buffer.clear()
+        self._dc_prev_left = 0.0
+        self._dc_prev_right = 0.0
+        self._dc_out_left = 0.0
+        self._dc_out_right = 0.0
+
+    def _apply_dc_block(self, left: float, right: float) -> tuple[float, float]:
+        out_left = left - self._dc_prev_left + self._dc_coeff * self._dc_out_left
+        out_right = right - self._dc_prev_right + self._dc_coeff * self._dc_out_right
+        self._dc_prev_left = left
+        self._dc_prev_right = right
+        self._dc_out_left = out_left
+        self._dc_out_right = out_right
+        return out_left, out_right
 
     def tick(self, cycles: int, div_ticks: int = 0, wave_pre_advance: int = 0) -> None:
         if not self.enabled:
@@ -303,8 +404,8 @@ class APU:
                     self.ch4.lfsr = (self.ch4.lfsr & ~0x40) | (xor_bit << 6)
 
         self.sample_cycles += cycles
-        while self.sample_cycles >= CYCLES_PER_SAMPLE:
-            self.sample_cycles -= CYCLES_PER_SAMPLE
+        while self.sample_cycles >= self.cycles_per_sample:
+            self.sample_cycles -= self.cycles_per_sample
             if len(self.audio_buffer) < self.buffer_size * 2:
                 self._generate_sample()
 
@@ -380,8 +481,9 @@ class APU:
         left *= (self.left_volume + 1) / 8.0
         right *= (self.right_volume + 1) / 8.0
 
-        left = (left / 60.0) * 2.0 - 0.1
-        right = (right / 60.0) * 2.0 - 0.1
+        left = left / 60.0
+        right = right / 60.0
+        left, right = self._apply_dc_block(left, right)
 
         left = max(-1.0, min(1.0, left))
         right = max(-1.0, min(1.0, right))

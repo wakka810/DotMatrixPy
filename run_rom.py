@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import array
 import time
 from pathlib import Path
 
@@ -105,16 +106,57 @@ def main() -> int:
 		}
 
 		from gb.apu import SAMPLE_RATE
+		audio_pending: list[float] = []
+		pending_read = 0
+		audio_format = None
+		audio_channels = 0
+		audio_rate = SAMPLE_RATE
+		bytes_per_sample = 0
+		bytes_per_frame = 0
+		target_queue_bytes = 0
+		max_pending_frames = 0
 		try:
 			desired = sdl2.SDL_AudioSpec(SAMPLE_RATE, sdl2.AUDIO_F32, 2, 2048)
-			obtained = sdl2.SDL_AudioSpec(SAMPLE_RATE, sdl2.AUDIO_F32, 2, 2048)
+			obtained = sdl2.SDL_AudioSpec(0, 0, 0, 0)
+			allow = (
+				sdl2.SDL_AUDIO_ALLOW_FREQUENCY_CHANGE
+				| sdl2.SDL_AUDIO_ALLOW_SAMPLES_CHANGE
+				| sdl2.SDL_AUDIO_ALLOW_CHANNELS_CHANGE
+				| sdl2.SDL_AUDIO_ALLOW_FORMAT_CHANGE
+			)
 			audio_device = sdl2.SDL_OpenAudioDevice(
-				None, 0, ctypes.byref(desired), ctypes.byref(obtained), 0
+				None, 0, ctypes.byref(desired), ctypes.byref(obtained), allow
 			)
 			if audio_device:
-				sdl2.SDL_PauseAudioDevice(audio_device, 0)
+				audio_format = obtained.format
+				audio_channels = obtained.channels
+				audio_rate = obtained.freq or SAMPLE_RATE
+				if audio_channels not in (1, 2) or audio_format not in (
+					sdl2.AUDIO_F32,
+					sdl2.AUDIO_S16SYS,
+				):
+					sdl2.SDL_CloseAudioDevice(audio_device)
+					audio_device = None
+				else:
+					gb.bus.apu.set_sample_rate(audio_rate)
+					bytes_per_sample = (
+						ctypes.sizeof(ctypes.c_float)
+						if audio_format == sdl2.AUDIO_F32
+						else ctypes.sizeof(ctypes.c_int16)
+					)
+					bytes_per_frame = bytes_per_sample * audio_channels
+					target_queue_bytes = int(audio_rate * bytes_per_frame * 0.08)
+					max_pending_frames = int(audio_rate * 0.5)
+					sdl2.SDL_PauseAudioDevice(audio_device, 0)
 		except Exception:
 			audio_device = None
+
+		def _float_to_s16(value: float) -> int:
+			if value > 1.0:
+				return 32767
+			if value < -1.0:
+				return -32768
+			return int(value * 32767.0)
 
 		running = True
 		target_dt = 1.0 / max(1, int(args.fps))
@@ -144,19 +186,55 @@ def main() -> int:
 			if audio_device:
 				samples = gb.bus.apu.get_samples()
 				if samples:
-					import array
-					sample_count = min(len(samples), 8192)
-					sample_data = array.array('f', samples[:sample_count])
-					sdl2.SDL_QueueAudio(
-						audio_device,
-						sample_data.buffer_info()[0],
-						sample_count * ctypes.sizeof(ctypes.c_float),
-					)
+					audio_pending.extend(samples)
 
-					max_queued = int(SAMPLE_RATE * 2 * 0.1 * ctypes.sizeof(ctypes.c_float))
+				if audio_pending:
+					pending_frames = (len(audio_pending) - pending_read) // 2
+					if pending_frames > max_pending_frames:
+						pending_read = len(audio_pending) - max_pending_frames * 2
+
 					queued = sdl2.SDL_GetQueuedAudioSize(audio_device)
-					if queued > max_queued:
-						sdl2.SDL_ClearQueuedAudio(audio_device)
+					if queued < target_queue_bytes:
+						need_frames = (target_queue_bytes - queued) // bytes_per_frame
+						available_frames = (len(audio_pending) - pending_read) // 2
+						frames_to_queue = min(need_frames, available_frames)
+						if frames_to_queue > 0:
+							start = pending_read
+							end = start + frames_to_queue * 2
+							chunk = audio_pending[start:end]
+							pending_read = end
+							if pending_read > 8192:
+								audio_pending = audio_pending[pending_read:]
+								pending_read = 0
+
+							if audio_channels == 2:
+								if audio_format == sdl2.AUDIO_F32:
+									sample_data = array.array("f", chunk)
+								else:
+									sample_data = array.array(
+										"h", (_float_to_s16(v) for v in chunk)
+									)
+							else:
+								if audio_format == sdl2.AUDIO_F32:
+									mono = [
+										(chunk[i] + chunk[i + 1]) * 0.5
+										for i in range(0, len(chunk), 2)
+									]
+									sample_data = array.array("f", mono)
+								else:
+									mono = (
+										(chunk[i] + chunk[i + 1]) * 0.5
+										for i in range(0, len(chunk), 2)
+									)
+									sample_data = array.array(
+										"h", (_float_to_s16(v) for v in mono)
+									)
+
+							sdl2.SDL_QueueAudio(
+								audio_device,
+								sample_data.buffer_info()[0],
+								len(sample_data) * bytes_per_sample,
+							)
 
 
 			if sdl2.SDL_UpdateTexture(texture, None, pixels, pitch) != 0:
