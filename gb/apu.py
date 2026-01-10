@@ -15,6 +15,25 @@ DUTY_WAVEFORMS = (
 )
 
 
+def _tick_length_counter(channel) -> None:
+    if channel.length_enabled and channel.length_counter > 0:
+        channel.length_counter -= 1
+        if channel.length_counter == 0:
+            channel.enabled = False
+
+
+def _tick_envelope(channel) -> None:
+    if channel.envelope_period == 0:
+        return
+    channel.envelope_timer -= 1
+    if channel.envelope_timer <= 0:
+        channel.envelope_timer = channel.envelope_period if channel.envelope_period else 8
+        if channel.envelope_add and channel.volume < 15:
+            channel.volume += 1
+        elif not channel.envelope_add and channel.volume > 0:
+            channel.volume -= 1
+
+
 @dataclass(slots=True)
 class SquareChannel:
     enabled: bool = False
@@ -50,21 +69,10 @@ class SquareChannel:
         return self.volume if DUTY_WAVEFORMS[self.duty][self.duty_pos] else 0
 
     def tick_length(self) -> None:
-        if self.length_enabled and self.length_counter > 0:
-            self.length_counter -= 1
-            if self.length_counter == 0:
-                self.enabled = False
+        _tick_length_counter(self)
 
     def tick_envelope(self) -> None:
-        if self.envelope_period == 0:
-            return
-        self.envelope_timer -= 1
-        if self.envelope_timer <= 0:
-            self.envelope_timer = self.envelope_period if self.envelope_period else 8
-            if self.envelope_add and self.volume < 15:
-                self.volume += 1
-            elif not self.envelope_add and self.volume > 0:
-                self.volume -= 1
+        _tick_envelope(self)
 
     def tick_sweep(self) -> None:
         if not self.sweep_enabled:
@@ -143,10 +151,7 @@ class WaveChannel:
         return sample >> shifts[self.volume_code]
 
     def tick_length(self) -> None:
-        if self.length_enabled and self.length_counter > 0:
-            self.length_counter -= 1
-            if self.length_counter == 0:
-                self.enabled = False
+        _tick_length_counter(self)
 
     def trigger(self) -> None:
         self.enabled = True
@@ -193,21 +198,10 @@ class NoiseChannel:
         return self.volume if (self.lfsr & 1) == 0 else 0
 
     def tick_length(self) -> None:
-        if self.length_enabled and self.length_counter > 0:
-            self.length_counter -= 1
-            if self.length_counter == 0:
-                self.enabled = False
+        _tick_length_counter(self)
 
     def tick_envelope(self) -> None:
-        if self.envelope_period == 0:
-            return
-        self.envelope_timer -= 1
-        if self.envelope_timer <= 0:
-            self.envelope_timer = self.envelope_period if self.envelope_period else 8
-            if self.envelope_add and self.volume < 15:
-                self.volume += 1
-            elif not self.envelope_add and self.volume > 0:
-                self.volume -= 1
+        _tick_envelope(self)
 
     def trigger(self) -> None:
         self.enabled = True
